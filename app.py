@@ -250,14 +250,7 @@ def status():
 @app.route('/predict', methods=['GET', 'POST'])
 @cross_origin()
 def predict():
-
     try:
-        print("Received request to /predict")
-        if not os.path.exists(MODEL_PATH):
-            return jsonify({"error": "Model not available. Please check server status at /status endpoint."}), 500
-        if not os.path.exists(CLASS_INDICES_PATH):
-            return jsonify({"error": "Class indices not available. Please check server status at /status endpoint."}), 500
-
         if request.method == 'GET':
             return jsonify({"message": "Predict endpoint is accessible."})
 
@@ -280,6 +273,10 @@ def predict():
                 model_path=MODEL_PATH,
                 class_indices_path=CLASS_INDICES_PATH
             )
+
+            # Check if prediction returned an error
+            if 'error' in prediction_result:
+                return jsonify({'error': prediction_result['error']}), 500
 
             return jsonify(prediction_result), 200
 
@@ -307,4 +304,6 @@ def trigger_download():
         })
 
 if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.DEBUG)
     app.run(host="0.0.0.0", port=PORT)

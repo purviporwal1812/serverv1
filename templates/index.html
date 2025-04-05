@@ -125,68 +125,29 @@
             fileReader.readAsDataURL(fileInput.files[0]);
 
             fetch('/predict', {
-                method: 'POST',
-                body: formData
-            })
-            .then(async response => {
-                const contentType = response.headers.get("content-type") || "";
-                const text = await response.text();
-                if (!response.ok) {
-                    throw new Error("Server error: " + text);
-                }
-                try {
-                    if (contentType.includes("application/json")) {
-                        return JSON.parse(text);
-                    } else {
-                        throw new Error("Expected JSON but got: " + text);
-                    }
-                } catch (e) {
-                    throw new Error("Could not parse JSON: " + e.message + "\nRaw response:\n" + text);
-                }
-            })
-            .then(data => {
-                document.getElementById('loading').style.display = 'none';
+  method: 'POST',
+  body: formData
+})
+.then(async response => {
+  const contentType = response.headers.get("content-type");
+  if (contentType && contentType.includes("application/json")) {
+    const data = await response.json();
+    if (data.error) {
+      alert("Server error: " + data.error);
+    } else {
+      // Success: handle the prediction result
+      console.log(data);
+    }
+  } else {
+    const text = await response.text();
+    alert("Unexpected server response:\n" + text);
+  }
+})
+.catch(error => {
+  console.error('Fetch error:', error);
+  alert("Error processing request:\n" + error.message);
+});
 
-                if (data.error) {
-                    alert('Error: ' + data.error);
-                    return;
-                }
-
-                document.getElementById('species-name').textContent = data.species;
-                document.getElementById('confidence').textContent =
-                    `Confidence: ${(data.confidence * 100).toFixed(2)}%`;
-
-                const topPredictionsList = document.getElementById('top-predictions-list');
-                topPredictionsList.innerHTML = '';
-
-                data.top_predictions.forEach(prediction => {
-                    const predictionItem = document.createElement('div');
-                    predictionItem.style.marginBottom = '10px';
-
-                    const progressBar = document.createElement('div');
-                    progressBar.className = 'progress-bar';
-
-                    const progressFill = document.createElement('div');
-                    progressFill.className = 'progress-bar-fill';
-                    progressFill.style.width = `${prediction.confidence * 100}%`;
-
-                    progressBar.appendChild(progressFill);
-
-                    const label = document.createElement('div');
-                    label.textContent = `${prediction.species}: ${(prediction.confidence * 100).toFixed(2)}%`;
-
-                    predictionItem.appendChild(label);
-                    predictionItem.appendChild(progressBar);
-
-                    topPredictionsList.appendChild(predictionItem);
-                });
-
-                document.getElementById('results').style.display = 'block';
-            })
-            .catch(error => {
-                document.getElementById('loading').style.display = 'none';
-                alert('Error processing request:\n\n' + error.message);
-            });
         });
     </script>
 </body>
