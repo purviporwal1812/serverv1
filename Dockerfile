@@ -27,4 +27,4 @@ COPY . .
 EXPOSE 10000
 
 # Run the app using Gunicorn
-CMD ["python", "app.py"]
+CMD ["sh", "-c", "gunicorn --timeout 300 --bind 0.0.0.0:$PORT app:app"]
