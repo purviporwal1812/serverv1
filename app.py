@@ -250,7 +250,9 @@ def status():
 @app.route('/predict', methods=['GET', 'POST'])
 @cross_origin()
 def predict():
+
     try:
+        print("Received request to /predict")
         if not os.path.exists(MODEL_PATH):
             return jsonify({"error": "Model not available. Please check server status at /status endpoint."}), 500
         if not os.path.exists(CLASS_INDICES_PATH):
