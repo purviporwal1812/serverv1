@@ -247,44 +247,46 @@ def status():
         "model_error": model_error,
         "class_indices_error": class_indices_error
     })
-
 @app.route('/predict', methods=['GET', 'POST'])
 @cross_origin()
 def predict():
-    # Check if model and class indices are available
-    if not os.path.exists(MODEL_PATH):
-        return jsonify({"error": "Model not available. Please check server status at /status endpoint."})
-    if not os.path.exists(CLASS_INDICES_PATH):
-        return jsonify({"error": "Class indices not available. Please check server status at /status endpoint."})
-    
-    # Allow GET for testing /predict separately
-    if request.method == 'GET':
-        return jsonify({"message": "Predict endpoint is accessible."})
-    
-    # POST method for file upload and prediction
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file part'})
-    
-    file = request.files['file']
-    
-    if file.filename == '':
-        return jsonify({'error': 'No selected file'})
-    
-    if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        unique_filename = f"{uuid.uuid4()}_{filename}"
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-        file.save(file_path)
-        
-        prediction_result = predict_species(
-            image_path=file_path,
-            model_path=MODEL_PATH,
-            class_indices_path=CLASS_INDICES_PATH
-        )
-        
-        return jsonify(prediction_result)
-    
-    return jsonify({'error': 'Invalid file type'})
+    try:
+        if not os.path.exists(MODEL_PATH):
+            return jsonify({"error": "Model not available. Please check server status at /status endpoint."}), 500
+        if not os.path.exists(CLASS_INDICES_PATH):
+            return jsonify({"error": "Class indices not available. Please check server status at /status endpoint."}), 500
+
+        if request.method == 'GET':
+            return jsonify({"message": "Predict endpoint is accessible."})
+
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file part in request'}), 400
+
+        file = request.files['file']
+
+        if file.filename == '':
+            return jsonify({'error': 'No selected file'}), 400
+
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            unique_filename = f"{uuid.uuid4()}_{filename}"
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+            file.save(file_path)
+
+            prediction_result = predict_species(
+                image_path=file_path,
+                model_path=MODEL_PATH,
+                class_indices_path=CLASS_INDICES_PATH
+            )
+
+            return jsonify(prediction_result), 200
+
+        return jsonify({'error': 'Invalid file type'}), 400
+
+    except Exception as e:
+        print(f"Exception during /predict: {e}")
+        return jsonify({'error': f"Internal Server Error: {str(e)}"}), 500
+
 
 @app.route('/trigger-download', methods=['POST'])
 def trigger_download():
