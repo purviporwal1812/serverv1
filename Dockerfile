@@ -27,4 +27,5 @@ COPY . .
 EXPOSE 10000
 
 # Run the app using Gunicorn
-CMD ["sh", "-c", "gunicorn --timeout 300 --bind 0.0.0.0:$PORT app:app"]
+# Limit Gunicorn to 1 worker to reduce RAM usage
+CMD ["gunicorn", "--timeout", "300", "--workers", "1", "--bind", "0.0.0.0:$PORT", "app:app"]

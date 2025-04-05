@@ -62,82 +62,6 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 MODEL_PATH = os.path.join(MODELS_DIR, 'final_model.keras')
 CLASS_INDICES_PATH = os.path.join(MODELS_DIR, 'class_indices.json')
 
-def download_dataset():
-    """
-    Uses kagglehub to download the dataset specified by KAGGLE_DATASET.
-    Returns the path where the dataset files are extracted.
-    """
-    try:
-        dataset_path = kagglehub.dataset_download(KAGGLE_DATASET)
-        print("Path to dataset files:", dataset_path)
-        return dataset_path
-    except Exception as e:
-        print("Error downloading dataset:", e)
-        return None
-
-def download_model():
-    """
-    Downloads the model file from the Kaggle dataset and saves it to MODEL_PATH.
-    """
-    if not os.path.exists(MODEL_PATH):
-        dataset_path = download_dataset()
-        if not dataset_path:
-            with open(f"{MODEL_PATH}.failed", "w") as f:
-                f.write("Dataset download failed.")
-            return False
-        src_model = os.path.join(dataset_path, "final_model.keras")
-        if not os.path.exists(src_model):
-            error_msg = f"Model file 'final_model.keras' not found in dataset path: {dataset_path}"
-            print(error_msg)
-            with open(f"{MODEL_PATH}.failed", "w") as f:
-                f.write(error_msg)
-            return False
-        try:
-            shutil.copy(src_model, MODEL_PATH)
-            print(f"Model copied to {MODEL_PATH}")
-            return True
-        except Exception as e:
-            print("Error copying model file:", e)
-            with open(f"{MODEL_PATH}.failed", "w") as f:
-                f.write(f"Copy failed: {str(e)}")
-            return False
-    else:
-        print("Model already exists locally.")
-        return True
-
-def download_class_indices():
-    """
-    Downloads the class indices file from the Kaggle dataset and saves it to CLASS_INDICES_PATH.
-    """
-    if not os.path.exists(CLASS_INDICES_PATH):
-        dataset_path = download_dataset()
-        if not dataset_path:
-            with open(f"{CLASS_INDICES_PATH}.failed", "w") as f:
-                f.write("Dataset download failed.")
-            return False
-        src_class_indices = os.path.join(dataset_path, "class_indices.json")
-        if not os.path.exists(src_class_indices):
-            error_msg = f"Class indices file 'class_indices.json' not found in dataset path: {dataset_path}"
-            print(error_msg)
-            with open(f"{CLASS_INDICES_PATH}.failed", "w") as f:
-                f.write(error_msg)
-            return False
-        try:
-            shutil.copy(src_class_indices, CLASS_INDICES_PATH)
-            print(f"Class indices copied to {CLASS_INDICES_PATH}")
-            return True
-        except Exception as e:
-            print("Error copying class indices file:", e)
-            with open(f"{CLASS_INDICES_PATH}.failed", "w") as f:
-                f.write(f"Copy failed: {str(e)}")
-            return False
-    else:
-        print("Class indices already exists locally.")
-        return True
-
-# Attempt to download files at startup only if needed.
-model_download_success = download_model()
-class_indices_download_success = download_class_indices()
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -287,21 +211,6 @@ def predict():
         return jsonify({'error': f"Internal Server Error: {str(e)}"}), 500
 
 
-@app.route('/trigger-download', methods=['POST'])
-def trigger_download():
-    """Endpoint to manually trigger model and class indices download"""
-    try:
-        model_result = download_model()
-        class_indices_result = download_class_indices()
-        
-        return jsonify({
-            "model_download_success": model_result,
-            "class_indices_download_success": class_indices_result
-        })
-    except Exception as e:
-        return jsonify({
-            "error": str(e)
-        })
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
