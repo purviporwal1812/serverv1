@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Plant Species Classifier</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .upload-form {
+            border: 2px dashed #ccc;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .results {
+            display: none;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            margin-top: 20px;
+        }
+        .results-container {
+            display: flex;
+        }
+        .image-preview {
+            flex: 1;
+            margin-right: 20px;
+        }
+        .image-preview img {
+            max-width: 100%;
+            max-height: 300px;
+        }
+        .prediction-details {
+            flex: 1;
+        }
+        .species-name {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .confidence {
+            margin-bottom: 20px;
+        }
+        .top-predictions {
+            margin-top: 20px;
+        }
+        .progress-bar {
+            height: 20px;
+            background-color: #e0e0e0;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background-color: #4CAF50;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Plant Species Classifier</h1>
+        <p>Upload a leaf image to identify the plant species</p>
+    </div>
+    
+    <div class="upload-form">
+        <form id="upload-form" enctype="multipart/form-data">
+            <input type="file" id="file-input" name="file" accept=".jpg, .jpeg, .png, .gif" required>
+            <br><br>
+            <button type="submit">Identify Plant Species</button>
+        </form>
+    </div>
+    
+    <div id="loading" style="display: none; text-align: center;">
+        <p>Processing image...</p>
+    </div>
+    
+    <div id="results" class="results">
+        <div class="results-container">
+            <div class="image-preview">
+                <h3>Your Image</h3>
+                <img id="preview-image" src="" alt="Uploaded Image">
+            </div>
+            <div class="prediction-details">
+                <h3>Identification Results</h3>
+                <div class="species-name" id="species-name"></div>
+                <div class="confidence" id="confidence"></div>
+                
+                <div class="top-predictions">
+                    <h4>Top 5 Predictions</h4>
+                    <div id="top-predictions-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        document.getElementById('upload-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const fileInput = document.getElementById('file-input');
+            if (!fileInput.files[0]) {
+                alert('Please select a file to upload');
+                return;
+            }
+            
+            // Display loading indicator
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('results').style.display = 'none';
+            
+            // Create form data and append file
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            
+            // Display image preview
+            const previewImage = document.getElementById('preview-image');
+            const fileReader = new FileReader();
+            fileReader.onload = function(e) {
+                previewImage.src = e.target.result;
+            };
+            fileReader.readAsDataURL(fileInput.files[0]);
+            
+            // Send request
+            fetch('/predict', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Hide loading indicator
+                document.getElementById('loading').style.display = 'none';
+                
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                    return;
+                }
+                
+                // Display results
+                document.getElementById('species-name').textContent = data.species;
+                document.getElementById('confidence').textContent = 
+                    `Confidence: ${(data.confidence * 100).toFixed(2)}%`;
+                
+                // Display top predictions
+                const topPredictionsList = document.getElementById('top-predictions-list');
+                topPredictionsList.innerHTML = '';
+                
+                data.top_predictions.forEach(prediction => {
+                    const predictionItem = document.createElement('div');
+                    predictionItem.style.marginBottom = '10px';
+                    
+                    const progressBar = document.createElement('div');
+                    progressBar.className = 'progress-bar';
+                    
+                    const progressFill = document.createElement('div');
+                    progressFill.className = 'progress-bar-fill';
+                    progressFill.style.width = `${prediction.confidence * 100}%`;
+                    
+                    progressBar.appendChild(progressFill);
+                    
+                    const label = document.createElement('div');
+                    label.textContent = `${prediction.species}: ${(prediction.confidence * 100).toFixed(2)}%`;
+                    
+                    predictionItem.appendChild(label);
+                    predictionItem.appendChild(progressBar);
+                    
+                    topPredictionsList.appendChild(predictionItem);
+                });
+                
+                // Show results
+                document.getElementById('results').style.display = 'block';
+            })
+            .catch(error => {
+                document.getElementById('loading').style.display = 'none';
+                alert('Error processing request: ' + error);
+            });
+        });
+    </script>
+</body>
+</html>
