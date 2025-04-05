@@ -28,9 +28,10 @@ def get_model():
     return global_model
 
 # Read critical configuration from environment variables.
+# If the model file already exists (baked in the image), then KAGGLE_DATASET is not required.
 KAGGLE_DATASET = os.environ.get("KAGGLE_DATASET")
-if not KAGGLE_DATASET:
-    raise ValueError("KAGGLE_DATASET environment variable not set!")
+if not KAGGLE_DATASET and not os.path.exists(os.path.join("models", "final_model.keras")):
+    raise ValueError("KAGGLE_DATASET environment variable not set and no local model found!")
 
 # Non-critical configuration with defaults.
 UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "uploads")
@@ -134,7 +135,7 @@ def download_class_indices():
         print("Class indices already exists locally.")
         return True
 
-# Attempt to download files at startup.
+# Attempt to download files at startup only if needed.
 model_download_success = download_model()
 class_indices_download_success = download_class_indices()
 
