@@ -28,6 +28,7 @@
         }
         .results-container {
             display: flex;
+            flex-wrap: wrap;
         }
         .image-preview {
             flex: 1;
@@ -92,7 +93,6 @@
                 <h3>Identification Results</h3>
                 <div class="species-name" id="species-name"></div>
                 <div class="confidence" id="confidence"></div>
-
                 <div class="top-predictions">
                     <h4>Top 5 Predictions</h4>
                     <div id="top-predictions-list"></div>
@@ -125,29 +125,59 @@
             fileReader.readAsDataURL(fileInput.files[0]);
 
             fetch('/predict', {
-  method: 'POST',
-  body: formData
-})
-.then(async response => {
-  const contentType = response.headers.get("content-type");
-  if (contentType && contentType.includes("application/json")) {
-    const data = await response.json();
-    if (data.error) {
-      alert("Server error: " + data.error);
-    } else {
-      // Success: handle the prediction result
-      console.log(data);
-    }
-  } else {
-    const text = await response.text();
-    alert("Unexpected server response:\n" + text);
-  }
-})
-.catch(error => {
-  console.error('Fetch error:', error);
-  alert("Error processing request:\n" + error.message);
-});
+                method: 'POST',
+                body: formData
+            })
+            .then(async response => {
+                const contentType = response.headers.get("content-type");
+                document.getElementById('loading').style.display = 'none';
 
+                if (contentType && contentType.includes("application/json")) {
+                    const data = await response.json();
+
+                    if (data.error) {
+                        alert("Server error: " + data.error);
+                        return;
+                    }
+
+                    // Show results section
+                    document.getElementById('results').style.display = 'block';
+                    document.getElementById('species-name').textContent = `Predicted Species: ${data.species}`;
+                    document.getElementById('confidence').textContent = `Confidence: ${(data.confidence * 100).toFixed(2)}%`;
+
+                    // Show top 5 predictions
+                    const predictionsList = document.getElementById('top-predictions-list');
+                    predictionsList.innerHTML = '';
+
+                    data.top_predictions.forEach(pred => {
+                        const container = document.createElement('div');
+                        const label = document.createElement('div');
+                        const barWrapper = document.createElement('div');
+                        const barFill = document.createElement('div');
+
+                        label.textContent = `${pred.species}: ${(pred.confidence * 100).toFixed(2)}%`;
+                        label.style.marginBottom = '4px';
+
+                        barWrapper.className = 'progress-bar';
+                        barFill.className = 'progress-bar-fill';
+                        barFill.style.width = `${pred.confidence * 100}%`;
+
+                        barWrapper.appendChild(barFill);
+                        container.appendChild(label);
+                        container.appendChild(barWrapper);
+                        predictionsList.appendChild(container);
+                    });
+
+                } else {
+                    const text = await response.text();
+                    alert("Unexpected server response:\n" + text);
+                }
+            })
+            .catch(error => {
+                document.getElementById('loading').style.display = 'none';
+                console.error('Fetch error:', error);
+                alert("Error processing request:\n" + error.message);
+            });
         });
     </script>
 </body>
