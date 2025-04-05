@@ -13,6 +13,20 @@ from tensorflow.keras.preprocessing import image
 from tensorflow.keras.models import load_model
 from flask_cors import CORS, cross_origin
 
+# Global variable to store the loaded model
+global_model = None
+
+def get_model():
+    global global_model
+    if global_model is None:
+        try:
+            global_model = load_model(MODEL_PATH)
+            print(f"Model loaded successfully from {MODEL_PATH}")
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            raise e
+    return global_model
+
 # Read critical configuration from environment variables.
 KAGGLE_DATASET = os.environ.get("KAGGLE_DATASET")
 if not KAGGLE_DATASET:
@@ -130,14 +144,6 @@ def allowed_file(filename):
 def predict_species(image_path, model_path=None, class_indices_path=None):
     """
     Function for making predictions.
-    
-    Parameters:
-        image_path (str): Path to the image file.
-        model_path (str): Path to the saved model (optional).
-        class_indices_path (str): Path to saved class indices JSON (optional).
-    
-    Returns:
-        dict: Prediction results including species and confidence.
     """
     if model_path is None:
         model_path = MODEL_PATH
@@ -150,12 +156,10 @@ def predict_species(image_path, model_path=None, class_indices_path=None):
     if not os.path.exists(class_indices_path):
         return {"error": "Class indices file not available. Please check server logs."}
 
-    # Load the model
+    # Use the lazy loading function to get the model
     try:
-        model = load_model(model_path)
-        print(f"Model loaded successfully from {model_path}")
+        model = get_model()  # This loads the model only once
     except Exception as e:
-        print(f"Error loading model: {e}")
         return {"error": f"Could not load model: {str(e)}"}
 
     # Load class indices
