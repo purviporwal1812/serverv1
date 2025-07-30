@@ -19,6 +19,7 @@ import time
 import requests
 from PIL import Image
 import io
+import threading
 import base64
 
 warnings.filterwarnings('ignore')
@@ -42,6 +43,27 @@ MODEL_CHOICE = os.environ.get("MODEL_CHOICE", "phi3.5")
 # Plant Knowledge Graph Class with Enhanced Capabilities
 class EnhancedPlantKnowledgeGraph:
     def __init__(self, uri: str, username: str, password: str, model_choice: str = "phi3.5"):
+    self.uri = uri
+    self.username = username
+    self.password = password
+    self.driver = None
+    self.model_choice = model_choice
+    self.connection_tested = False
+    self.data_loaded = False
+    self.last_error = None
+    
+    # Initialize models as None - will be loaded in background
+    self.image_model = None
+    self.image_processor = None
+    self.text_generator = None
+    self.models_loading = False
+    self.models_loaded = False
+    
+    # Start background model loading
+    self.start_background_model_loading()
+    
+    # Try to establish connection with multiple URI formats
+    self._establish_connection()
         self.uri = uri
         self.username = username
         self.password = password
@@ -55,15 +77,23 @@ class EnhancedPlantKnowledgeGraph:
         self.image_model = None
         self.image_processor = None
         self.text_generator = None
-        self.load_ai_models()
         
         # Try to establish connection with multiple URI formats
         self._establish_connection()
     
-    def load_ai_models(self):
-        """Load AI models for image recognition and text generation"""
+
+
+
+    def start_background_model_loading(self):
+        """Start loading AI models in background thread"""
+        self.models_loading = True
+        thread = threading.Thread(target=self.load_ai_models_background, daemon=True)
+        thread.start()
+
+    def load_ai_models_background(self):
+        """Load AI models in background thread"""
         try:
-            print("🤖 Loading AI models...")
+            print("🤖 Loading AI models in background...")
             
             # Load BLIP model for image captioning/plant identification
             self.image_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
@@ -77,16 +107,24 @@ class EnhancedPlantKnowledgeGraph:
                 device=0 if torch.cuda.is_available() else -1
             )
             
-            print("✅ AI models loaded successfully")
+            self.models_loaded = True
+            self.models_loading = False
+            print("✅ AI models loaded successfully in background")
             
         except Exception as e:
-            print(f"⚠️ Warning: Could not load AI models: {e}")
+            print(f"⚠️ Warning: Could not load AI models in background: {e}")
             print("🔄 Falling back to API-based solutions")
+            self.models_loading = False
+            self.models_loaded = False
     
     def identify_plant_from_image(self, image_path: str) -> Tuple[str, float]:
         """Identify plant from image using BLIP model or fallback methods"""
         try:
-            if self.image_model and self.image_processor:
+            # Check if models are still loading
+            if self.models_loading:
+                return "Models still loading, please try again in a moment", 0.1
+            
+            if self.models_loaded and self.image_model and self.image_processor:
                 # Use local BLIP model
                 image = Image.open(image_path).convert('RGB')
                 
@@ -109,9 +147,9 @@ class EnhancedPlantKnowledgeGraph:
                 return caption.replace("a photo of", "").strip(), 0.5
             
             else:
-                # Fallback: Use PlantNet API or similar free service
-                return print("not found ai model")
-                
+                # Fallback: Return generic plant identification
+                return "Plant species identification unavailable", 0.2
+                    
         except Exception as e:
             print(f"❌ Plant identification failed: {e}")
             return "Unknown Plant", 0.1
@@ -221,40 +259,44 @@ class EnhancedPlantKnowledgeGraph:
         return 'Unknown'
     
     def generate_additional_plant_info(self, plant_name: str, scientific_name: str) -> Dict:
-        """Generate additional plant information using LLM"""
-        try:
-            prompts = {
-                'medicinal_properties': f"List the medicinal properties and health benefits of {plant_name} ({scientific_name}). Be concise.",
-                'uses': f"What are the traditional, cultural, and industrial uses of {plant_name}? Provide a brief overview.",
-                'chemical_components': f"What are the main chemical compounds found in {plant_name}? List key components."
-            }
-            
-            additional_data = {}
-            
-            for field, prompt in prompts.items():
-                try:
-                    if self.text_generator:
-                        # Use local model
-                        response = self.text_generator(prompt, max_length=100, do_sample=True, temperature=0.7)
-                        generated_text = response[0]['generated_text'].replace(prompt, '').strip()
-                        additional_data[field] = self.clean_text(generated_text)
-                    else:
-                        # Fallback to predefined templates
-                        additional_data[field] = self.get_template_info(plant_name, field)
-                        
-                except Exception as e:
-                    print(f"⚠️ LLM generation failed for {field}: {e}")
+    """Generate additional plant information using LLM"""
+    try:
+        prompts = {
+            'medicinal_properties': f"List the medicinal properties and health benefits of {plant_name} ({scientific_name}). Be concise.",
+            'uses': f"What are the traditional, cultural, and industrial uses of {plant_name}? Provide a brief overview.",
+            'chemical_components': f"What are the main chemical compounds found in {plant_name}? List key components."
+        }
+        
+        additional_data = {}
+        
+        for field, prompt in prompts.items():
+            try:
+                # Check if models are loaded and available
+                if self.models_loaded and self.text_generator:
+                    # Use local model
+                    response = self.text_generator(prompt, max_length=100, do_sample=True, temperature=0.7)
+                    generated_text = response[0]['generated_text'].replace(prompt, '').strip()
+                    additional_data[field] = self.clean_text(generated_text)
+                elif self.models_loading:
+                    # Models still loading, use template
+                    additional_data[field] = f"AI models loading... Using template for {plant_name}"
+                else:
+                    # Fallback to predefined templates
                     additional_data[field] = self.get_template_info(plant_name, field)
-            
-            return additional_data
-            
-        except Exception as e:
-            print(f"❌ Additional info generation failed: {e}")
-            return {
-                'medicinal_properties': 'Properties under research',
-                'uses': 'Traditional and ornamental uses',
-                'chemical_components': 'Various organic compounds'
-            }
+                    
+            except Exception as e:
+                print(f"⚠️ LLM generation failed for {field}: {e}")
+                additional_data[field] = self.get_template_info(plant_name, field)
+        
+        return additional_data
+        
+    except Exception as e:
+        print(f"❌ Additional info generation failed: {e}")
+        return {
+            'medicinal_properties': 'Properties under research',
+            'uses': 'Traditional and ornamental uses',
+            'chemical_components': 'Various organic compounds'
+        }
     
     def get_template_info(self, plant_name: str, field: str) -> str:
         """Provide template information when LLM is not available"""
@@ -727,22 +769,59 @@ def home():
 @app.route('/status')
 def status():
     """Enhanced API status endpoint"""
-    ai_models_status = "Loaded" if kg.image_model and kg.text_generator else "Fallback Mode"
+    if kg.models_loading:
+        ai_models_status = "Loading in background..."
+    elif kg.models_loaded:
+        ai_models_status = "Loaded"
+    else:
+        ai_models_status = "Fallback Mode"
     
     return jsonify({
         "kg_available": True,
         "connection_tested": kg.connection_tested,
         "data_loaded": kg.data_loaded,
         "ai_models": ai_models_status,
+        "models_loading": kg.models_loading,
+        "models_loaded": kg.models_loaded,
         "features": {
-            "image_recognition": bool(kg.image_model),
-            "text_generation": bool(kg.text_generator),
+            "image_recognition": kg.models_loaded and bool(kg.image_model),
+            "text_generation": kg.models_loaded and bool(kg.text_generator),
             "web_scraping": True,
             "auto_generation": True
         },
         "neo4j_uri": NEO4J_URI.split('@')[1] if '@' in NEO4J_URI else "configured"
     })
 
+@app.route('/ai_status')
+def ai_status():
+    """Check AI models status"""
+    return jsonify({
+        'loading_status': {
+            'models_loading': kg.models_loading,
+            'models_loaded': kg.models_loaded
+        },
+        'ai_models': {
+            'image_recognition': {
+                'loaded': kg.models_loaded and bool(kg.image_model and kg.image_processor),
+                'model': 'Salesforce/blip-image-captioning-base' if kg.models_loaded and kg.image_model else 'Loading...' if kg.models_loading else 'Not loaded'
+            },
+            'text_generation': {
+                'loaded': kg.models_loaded and bool(kg.text_generator),
+                'model': 'microsoft/DialoGPT-medium' if kg.models_loaded and kg.text_generator else 'Loading...' if kg.models_loading else 'Not loaded'
+            }
+        },
+        'fallback_methods': {
+            'web_apis': 'GBIF, Wikipedia APIs available',
+            'template_generation': 'Available for all plants'
+        },
+        'capabilities': [
+            '🔍 Plant search in existing knowledge graph',
+            '🤖 Auto-generation of missing plant data',
+            '📸 Plant identification from images' + (' (loading...)' if kg.models_loading else ' (ready)' if kg.models_loaded else ' (fallback mode)'),
+            '🌐 Web scraping from botanical APIs',
+            '📊 Relationship mapping in knowledge graph'
+        ]
+    })
 @app.route('/test_connection')
 def test_database_connection():
     """Test database connection endpoint with detailed diagnostics"""
