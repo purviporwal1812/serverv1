@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: plant-knowledge-graph
+    env: python
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 120 --preload
+    plan: starter  # or starter plus if needed
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.18
+      - key: PORT
+        sync: false
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USERNAME
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: UPLOAD_FOLDER
+        value: uploads
+      - key: ALLOWED_EXTENSIONS
+        value: png,jpg,jpeg,gif
+      - key: MODEL_CHOICE
+        value: phi3.5

@@ -39,14 +39,6 @@ NEO4J_USERNAME = os.environ.get("NEO4J_USERNAME")
 NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD")
 MODEL_CHOICE = os.environ.get("MODEL_CHOICE", "phi3.5")
 
-# Alternative URIs to try if the main one fails
-ALTERNATIVE_URIS = [
-    "neo4j+s://23ce6517.databases.neo4j.io",
-    "bolt+s://23ce6517.databases.neo4j.io:7687",
-    "neo4j://23ce6517.databases.neo4j.io:7687",
-    "bolt://23ce6517.databases.neo4j.io:7687"
-]
-
 # Plant Knowledge Graph Class with Enhanced Capabilities
 class EnhancedPlantKnowledgeGraph:
     def __init__(self, uri: str, username: str, password: str, model_choice: str = "phi3.5"):
@@ -118,37 +110,10 @@ class EnhancedPlantKnowledgeGraph:
             
             else:
                 # Fallback: Use PlantNet API or similar free service
-                return self.identify_plant_via_api(image_path)
+                return print("not found ai model")
                 
         except Exception as e:
             print(f"❌ Plant identification failed: {e}")
-            return "Unknown Plant", 0.1
-    
-    def identify_plant_via_api(self, image_path: str) -> Tuple[str, float]:
-        """Fallback method using free plant identification APIs"""
-        try:
-            # Using PlantNet API (free with registration)
-            # You would need to register at https://my.plantnet.org/
-            
-            # For demo purposes, we'll simulate plant identification
-            # In production, replace with actual API calls
-            
-            common_plants = [
-                "Rose", "Tulip", "Sunflower", "Oak Tree", "Pine Tree",
-                "Fern", "Moss", "Dandelion", "Lily", "Orchid",
-                "Bamboo", "Cactus", "Aloe Vera", "Mint", "Basil"
-            ]
-            
-            # Simple simulation - in real implementation, send image to API
-            import random
-            identified_plant = random.choice(common_plants)
-            confidence = random.uniform(0.6, 0.9)
-            
-            print(f"🌿 Simulated plant identification: {identified_plant} (confidence: {confidence:.2f})")
-            return identified_plant, confidence
-            
-        except Exception as e:
-            print(f"❌ API identification failed: {e}")
             return "Unknown Plant", 0.1
     
     def generate_plant_data_from_web(self, plant_name: str) -> Dict:
@@ -410,7 +375,7 @@ class EnhancedPlantKnowledgeGraph:
     # Include all previous methods from the original class
     def _establish_connection(self):
         """Try to establish connection with multiple URI formats"""
-        uris_to_try = [self.uri] + [uri for uri in ALTERNATIVE_URIS if uri != self.uri]
+        uris_to_try = [self.uri]
         
         for uri in uris_to_try:
             try:
@@ -570,7 +535,7 @@ class EnhancedPlantKnowledgeGraph:
                     return True, "Plant already exists in database"
                 return False, f"Error inserting data: {error_msg}"
     
-    def load_sample_data(self) -> Tuple[int, int]:
+    
         """Load sample plant data"""
         sample_plants = [
             {
@@ -752,7 +717,6 @@ def home():
         ],
         "endpoints": {
             "test_connection": "/test_connection",
-            "load_data": "/load_data",
             "search": "/search/<plant_name>",
             "smart_search": "/smart_search/<plant_name>",
             "predict": "/predict (upload image or search by name)",
@@ -791,8 +755,7 @@ def test_database_connection():
                 "diagnostic_info": {
                     "neo4j_uri": kg.uri,
                     "username": kg.username,
-                    "password_set": bool(kg.password),
-                    "alternative_uris": ALTERNATIVE_URIS
+                    "password_set": bool(kg.password)
                 }
             }), 500
         
@@ -817,7 +780,6 @@ def test_database_connection():
                     "Check network connectivity",
                     "Try different URI formats"
                 ],
-                "tested_uris": ALTERNATIVE_URIS
             }
             return jsonify(response_data), 500
         
@@ -831,8 +793,7 @@ def test_database_connection():
             "error_type": type(e).__name__
         }), 500
 
-@app.route('/load_data')
-def load_plant_data():
+
     """Load sample plant data endpoint"""
     try:
         success_count, error_count = kg.load_sample_data()
@@ -1174,7 +1135,6 @@ if __name__ == "__main__":
     print("- GET  /status                    - System status")  
     print("- GET  /ai_status                 - AI models status")
     print("- GET  /test_connection           - Test DB connection")
-    print("- GET  /load_data                 - Load sample data") 
     print("- GET  /search/<plant_name>       - Search existing plants only")
     print("- GET  /smart_search/<plant_name> - Smart search with auto-generation")
     print("- POST /predict                   - Enhanced plant identification")
@@ -1182,4 +1142,4 @@ if __name__ == "__main__":
     print("- POST /generate_plant_data       - Manual data generation")
     print("- GET  /quick_demo                - Enhanced demo with AI features")
     
-    app.run(host="0.0.0.0", port=PORT, debug=True)
+    app.run(host="0.0.0.0", port=PORT, debug=False)
