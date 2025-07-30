@@ -43,27 +43,6 @@ MODEL_CHOICE = os.environ.get("MODEL_CHOICE", "phi3.5")
 # Plant Knowledge Graph Class with Enhanced Capabilities
 class EnhancedPlantKnowledgeGraph:
     def __init__(self, uri: str, username: str, password: str, model_choice: str = "phi3.5"):
-    self.uri = uri
-    self.username = username
-    self.password = password
-    self.driver = None
-    self.model_choice = model_choice
-    self.connection_tested = False
-    self.data_loaded = False
-    self.last_error = None
-    
-    # Initialize models as None - will be loaded in background
-    self.image_model = None
-    self.image_processor = None
-    self.text_generator = None
-    self.models_loading = False
-    self.models_loaded = False
-    
-    # Start background model loading
-    self.start_background_model_loading()
-    
-    # Try to establish connection with multiple URI formats
-    self._establish_connection()
         self.uri = uri
         self.username = username
         self.password = password
@@ -73,14 +52,35 @@ class EnhancedPlantKnowledgeGraph:
         self.data_loaded = False
         self.last_error = None
         
-        # Initialize models for plant identification and data generation
+        # Initialize models as None - will be loaded in background
         self.image_model = None
         self.image_processor = None
         self.text_generator = None
+        self.models_loading = False
+        self.models_loaded = False
+        
+        # Start background model loading
+        self.start_background_model_loading()
         
         # Try to establish connection with multiple URI formats
         self._establish_connection()
-    
+        self.uri = uri
+        self.username = username
+        self.password = password
+        self.driver = None
+        self.model_choice = model_choice
+        self.connection_tested = False
+        self.data_loaded = False
+        self.last_error = None
+            
+            # Initialize models for plant identification and data generation
+        self.image_model = None
+        self.image_processor = None
+        self.text_generator = None
+            
+            # Try to establish connection with multiple URI formats
+        self._establish_connection()
+        
 
 
 
@@ -259,44 +259,44 @@ class EnhancedPlantKnowledgeGraph:
         return 'Unknown'
     
     def generate_additional_plant_info(self, plant_name: str, scientific_name: str) -> Dict:
-    """Generate additional plant information using LLM"""
-    try:
-        prompts = {
-            'medicinal_properties': f"List the medicinal properties and health benefits of {plant_name} ({scientific_name}). Be concise.",
-            'uses': f"What are the traditional, cultural, and industrial uses of {plant_name}? Provide a brief overview.",
-            'chemical_components': f"What are the main chemical compounds found in {plant_name}? List key components."
-        }
-        
-        additional_data = {}
-        
-        for field, prompt in prompts.items():
-            try:
-                # Check if models are loaded and available
-                if self.models_loaded and self.text_generator:
-                    # Use local model
-                    response = self.text_generator(prompt, max_length=100, do_sample=True, temperature=0.7)
-                    generated_text = response[0]['generated_text'].replace(prompt, '').strip()
-                    additional_data[field] = self.clean_text(generated_text)
-                elif self.models_loading:
-                    # Models still loading, use template
-                    additional_data[field] = f"AI models loading... Using template for {plant_name}"
-                else:
-                    # Fallback to predefined templates
+        """Generate additional plant information using LLM"""
+        try:
+            prompts = {
+                'medicinal_properties': f"List the medicinal properties and health benefits of {plant_name} ({scientific_name}). Be concise.",
+                'uses': f"What are the traditional, cultural, and industrial uses of {plant_name}? Provide a brief overview.",
+                'chemical_components': f"What are the main chemical compounds found in {plant_name}? List key components."
+            }
+            
+            additional_data = {}
+            
+            for field, prompt in prompts.items():
+                try:
+                    # Check if models are loaded and available
+                    if self.models_loaded and self.text_generator:
+                        # Use local model
+                        response = self.text_generator(prompt, max_length=100, do_sample=True, temperature=0.7)
+                        generated_text = response[0]['generated_text'].replace(prompt, '').strip()
+                        additional_data[field] = self.clean_text(generated_text)
+                    elif self.models_loading:
+                        # Models still loading, use template
+                        additional_data[field] = f"AI models loading... Using template for {plant_name}"
+                    else:
+                        # Fallback to predefined templates
+                        additional_data[field] = self.get_template_info(plant_name, field)
+                        
+                except Exception as e:
+                    print(f"⚠️ LLM generation failed for {field}: {e}")
                     additional_data[field] = self.get_template_info(plant_name, field)
-                    
-            except Exception as e:
-                print(f"⚠️ LLM generation failed for {field}: {e}")
-                additional_data[field] = self.get_template_info(plant_name, field)
-        
-        return additional_data
-        
-    except Exception as e:
-        print(f"❌ Additional info generation failed: {e}")
-        return {
-            'medicinal_properties': 'Properties under research',
-            'uses': 'Traditional and ornamental uses',
-            'chemical_components': 'Various organic compounds'
-        }
+            
+            return additional_data
+            
+        except Exception as e:
+            print(f"❌ Additional info generation failed: {e}")
+            return {
+                'medicinal_properties': 'Properties under research',
+                'uses': 'Traditional and ornamental uses',
+                'chemical_components': 'Various organic compounds'
+            }
     
     def get_template_info(self, plant_name: str, field: str) -> str:
         """Provide template information when LLM is not available"""
@@ -1173,8 +1173,7 @@ def quick_demo():
             'error': str(e)
         }), 500
 
-@app.route('/ai_status')
-def ai_status():
+
     """Check AI models status"""
     return jsonify({
         'ai_models': {
