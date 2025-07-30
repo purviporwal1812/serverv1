@@ -1,26 +1,15 @@
 from dotenv import load_dotenv
 load_dotenv()
-
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import os
-import uuid
-import json
-import numpy as np
-from werkzeug.utils import secure_filename
-from flask_cors import CORS, cross_origin
 import pandas as pd
-from neo4j import GraphDatabase
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BlipProcessor, BlipForConditionalGeneration
-import torch
+import numpy as np
 import re
 import warnings
-from typing import Dict, List, Tuple, Optional
-import time
-import requests
-from PIL import Image
-import io
-import threading
-import base64
+from typing import Dict, List, Tuple
+from neo4j import GraphDatabase
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 
 warnings.filterwarnings('ignore')
 
@@ -51,108 +40,12 @@ class EnhancedPlantKnowledgeGraph:
         self.connection_tested = False
         self.data_loaded = False
         self.last_error = None
-        
-        # Initialize models as None - will be loaded in background
-        self.image_model = None
-        self.image_processor = None
-        self.text_generator = None
-        self.models_loading = False
-        self.models_loaded = False
-        
-        # Start background model loading
-        self.start_background_model_loading()
-        
-        # Try to establish connection with multiple URI formats
-        self._establish_connection()
-        self.uri = uri
-        self.username = username
-        self.password = password
-        self.driver = None
-        self.model_choice = model_choice
-        self.connection_tested = False
-        self.data_loaded = False
-        self.last_error = None
             
             # Initialize models for plant identification and data generation
-        self.image_model = None
-        self.image_processor = None
         self.text_generator = None
             
             # Try to establish connection with multiple URI formats
         self._establish_connection()
-        
-
-
-
-    def start_background_model_loading(self):
-        """Start loading AI models in background thread"""
-        self.models_loading = True
-        thread = threading.Thread(target=self.load_ai_models_background, daemon=True)
-        thread.start()
-
-    def load_ai_models_background(self):
-        """Load AI models in background thread"""
-        try:
-            print("🤖 Loading AI models in background...")
-            
-            # Load BLIP model for image captioning/plant identification
-            self.image_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-            self.image_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
-            
-            # Load lightweight text generation model
-            self.text_generator = pipeline(
-                "text-generation", 
-                model="microsoft/DialoGPT-medium",
-                tokenizer="microsoft/DialoGPT-medium",
-                device=0 if torch.cuda.is_available() else -1
-            )
-            
-            self.models_loaded = True
-            self.models_loading = False
-            print("✅ AI models loaded successfully in background")
-            
-        except Exception as e:
-            print(f"⚠️ Warning: Could not load AI models in background: {e}")
-            print("🔄 Falling back to API-based solutions")
-            self.models_loading = False
-            self.models_loaded = False
-    
-    def identify_plant_from_image(self, image_path: str) -> Tuple[str, float]:
-        """Identify plant from image using BLIP model or fallback methods"""
-        try:
-            # Check if models are still loading
-            if self.models_loading:
-                return "Models still loading, please try again in a moment", 0.1
-            
-            if self.models_loaded and self.image_model and self.image_processor:
-                # Use local BLIP model
-                image = Image.open(image_path).convert('RGB')
-                
-                # Generate caption with plant focus
-                inputs = self.image_processor(image, "a photo of", return_tensors="pt")
-                out = self.image_model.generate(**inputs, max_length=50)
-                caption = self.image_processor.decode(out[0], skip_special_tokens=True)
-                
-                # Extract potential plant name from caption
-                plant_keywords = ['plant', 'flower', 'leaf', 'tree', 'herb', 'grass', 'fern', 'moss']
-                confidence = 0.7
-                
-                # Simple plant name extraction logic
-                words = caption.lower().split()
-                for i, word in enumerate(words):
-                    if word in plant_keywords and i < len(words) - 1:
-                        potential_name = words[i + 1]
-                        return potential_name.capitalize(), confidence
-                
-                return caption.replace("a photo of", "").strip(), 0.5
-            
-            else:
-                # Fallback: Return generic plant identification
-                return "Plant species identification unavailable", 0.2
-                    
-        except Exception as e:
-            print(f"❌ Plant identification failed: {e}")
-            return "Unknown Plant", 0.1
     
     def generate_plant_data_from_web(self, plant_name: str) -> Dict:
         """Generate comprehensive plant data using web search and LLM"""
@@ -170,143 +63,8 @@ class EnhancedPlantKnowledgeGraph:
             print(f"❌ Data generation failed for {plant_name}: {e}")
             return self.create_minimal_plant_data(plant_name)
     
-    def fetch_plant_data_from_apis(self, plant_name: str) -> Dict:
-        """Fetch plant data from free botanical APIs"""
-        try:
-            # Try GBIF API (Global Biodiversity Information Facility)
-            gbif_url = f"https://api.gbif.org/v1/species/search?q={plant_name}&limit=1"
-            response = requests.get(gbif_url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('results'):
-                    result = data['results'][0]
-                    
-                    plant_data = {
-                        'plant_name': plant_name,
-                        'scientific_name': result.get('scientificName', 'Unknown'),
-                        'family': result.get('family', 'Unknown Family'),
-                        'kingdom': result.get('kingdom', 'Plantae'),
-                        'order': result.get('order', 'Unknown Order'),
-                        'genus': result.get('genus', 'Unknown Genus'),
-                        'species': result.get('species', 'Unknown Species'),
-                        'medicinal_properties': '',
-                        'habitat': '',
-                        'uses': '',
-                        'chemical_components': ''
-                    }
-                    
-                    # Generate additional fields using LLM
-                    additional_data = self.generate_additional_plant_info(plant_name, plant_data['scientific_name'])
-                    plant_data.update(additional_data)
-                    
-                    print(f"✅ Fetched data for {plant_name} from GBIF API")
-                    return plant_data
-            
-            # Fallback to other APIs like Trefle, iNaturalist, etc.
-            return self.try_alternative_apis(plant_name)
-            
-        except Exception as e:
-            print(f"⚠️ API fetch failed for {plant_name}: {e}")
-            return {}
-    
-    def try_alternative_apis(self, plant_name: str) -> Dict:
-        """Try alternative free botanical APIs"""
-        try:
-            # Try Wikipedia API for basic information
-            wiki_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{plant_name}"
-            response = requests.get(wiki_url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                extract = data.get('extract', '')
-                
-                # Extract basic information from Wikipedia summary
-                plant_data = {
-                    'plant_name': plant_name,
-                    'scientific_name': self.extract_scientific_name(extract),
-                    'family': 'Unknown Family',
-                    'kingdom': 'Plantae',
-                    'order': 'Unknown Order',
-                    'genus': plant_name.split()[0] if ' ' in plant_name else 'Unknown Genus',
-                    'species': plant_name.split()[1] if len(plant_name.split()) > 1 else 'Unknown Species',
-                    'medicinal_properties': '',
-                    'habitat': extract[:200] if extract else '',
-                    'uses': '',
-                    'chemical_components': ''
-                }
-                
-                # Generate missing fields
-                additional_data = self.generate_additional_plant_info(plant_name, plant_data['scientific_name'])
-                plant_data.update(additional_data)
-                
-                return plant_data
-                
-        except Exception as e:
-            print(f"⚠️ Alternative API failed: {e}")
-        
-        return {}
-    
-    def extract_scientific_name(self, text: str) -> str:
-        """Extract scientific name from text using regex"""
-        # Look for italicized text or text in parentheses that looks like scientific names
-        scientific_pattern = r'\b[A-Z][a-z]+ [a-z]+\b'
-        matches = re.findall(scientific_pattern, text)
-        
-        if matches:
-            return matches[0]
-        
-        return 'Unknown'
-    
-    def generate_additional_plant_info(self, plant_name: str, scientific_name: str) -> Dict:
-        """Generate additional plant information using LLM"""
-        try:
-            prompts = {
-                'medicinal_properties': f"List the medicinal properties and health benefits of {plant_name} ({scientific_name}). Be concise.",
-                'uses': f"What are the traditional, cultural, and industrial uses of {plant_name}? Provide a brief overview.",
-                'chemical_components': f"What are the main chemical compounds found in {plant_name}? List key components."
-            }
-            
-            additional_data = {}
-            
-            for field, prompt in prompts.items():
-                try:
-                    # Check if models are loaded and available
-                    if self.models_loaded and self.text_generator:
-                        # Use local model
-                        response = self.text_generator(prompt, max_length=100, do_sample=True, temperature=0.7)
-                        generated_text = response[0]['generated_text'].replace(prompt, '').strip()
-                        additional_data[field] = self.clean_text(generated_text)
-                    elif self.models_loading:
-                        # Models still loading, use template
-                        additional_data[field] = f"AI models loading... Using template for {plant_name}"
-                    else:
-                        # Fallback to predefined templates
-                        additional_data[field] = self.get_template_info(plant_name, field)
-                        
-                except Exception as e:
-                    print(f"⚠️ LLM generation failed for {field}: {e}")
-                    additional_data[field] = self.get_template_info(plant_name, field)
-            
-            return additional_data
-            
-        except Exception as e:
-            print(f"❌ Additional info generation failed: {e}")
-            return {
-                'medicinal_properties': 'Properties under research',
-                'uses': 'Traditional and ornamental uses',
-                'chemical_components': 'Various organic compounds'
-            }
-    
-    def get_template_info(self, plant_name: str, field: str) -> str:
-        """Provide template information when LLM is not available"""
-        templates = {
-            'medicinal_properties': f"Traditional medicinal uses of {plant_name} are being researched. May have anti-inflammatory and antioxidant properties.",
-            'uses': f"{plant_name} is used for ornamental purposes, traditional medicine, and may have industrial applications.",
-            'chemical_components': f"{plant_name} contains various phytochemicals including flavonoids, alkaloids, and essential oils."
-        }
-        
-        return templates.get(field, 'Information being researched')
+
+
     
     def generate_plant_data_with_llm(self, plant_name: str) -> Dict:
         """Generate complete plant data using LLM when APIs fail"""
@@ -358,21 +116,6 @@ class EnhancedPlantKnowledgeGraph:
         
         return plant_data
     
-    def create_minimal_plant_data(self, plant_name: str) -> Dict:
-        """Create minimal plant data when all other methods fail"""
-        return {
-            'plant_name': plant_name,
-            'scientific_name': f"{plant_name.replace(' ', '_')} sp.",
-            'family': 'Unknown Family',
-            'kingdom': 'Plantae',
-            'order': 'Unknown Order',
-            'genus': plant_name.split()[0] if ' ' in plant_name else plant_name,
-            'species': plant_name.split()[1] if len(plant_name.split()) > 1 else 'sp.',
-            'medicinal_properties': 'Medicinal properties under investigation',
-            'habitat': 'Natural habitat varies by species',
-            'uses': 'Traditional uses and ornamental purposes',
-            'chemical_components': 'Contains various phytochemicals and organic compounds'
-        }
     
     def search_or_generate_plant_data(self, plant_name: str) -> Tuple[bool, List[Dict], str]:
         """Search for plant data, generate if not found"""
@@ -576,51 +319,7 @@ class EnhancedPlantKnowledgeGraph:
                 if "already exists" in error_msg.lower() or "constraint" in error_msg.lower():
                     return True, "Plant already exists in database"
                 return False, f"Error inserting data: {error_msg}"
-    
-    
-        """Load sample plant data"""
-        sample_plants = [
-            {
-                'plant_name': 'Schleichera_Oleosa',
-                'scientific_name': 'Schleichera oleosa',
-                'family': 'Sapindaceae',
-                'kingdom': 'Plantae',
-                'order': 'Sapindales',
-                'genus': 'Schleichera',
-                'species': 'oleosa',
-                'medicinal_properties': 'Used in traditional medicine for skin diseases, wounds, and digestive issues',
-                'habitat': 'Tropical forests of India and Southeast Asia',
-                'uses': 'Oil extraction, timber, traditional medicine',
-                'chemical_components': 'Saponins, tannins, essential oils'
-            },
-            {
-                'plant_name': 'Turmeric',
-                'scientific_name': 'Curcuma longa',
-                'family': 'Zingiberaceae',
-                'kingdom': 'Plantae',
-                'order': 'Zingiberales',
-                'genus': 'Curcuma',
-                'species': 'longa',
-                'medicinal_properties': 'Anti-inflammatory, antioxidant, antimicrobial properties',
-                'habitat': 'Native to Southeast Asia, cultivated in tropical regions',
-                'uses': 'Culinary spice, traditional medicine, cosmetics',
-                'chemical_components': 'Curcumin, essential oils, proteins'
-            },
-            {
-                'plant_name': 'Neem',
-                'scientific_name': 'Azadirachta indica',
-                'family': 'Meliaceae',
-                'kingdom': 'Plantae',
-                'order': 'Sapindales',
-                'genus': 'Azadirachta',
-                'species': 'indica',
-                'medicinal_properties': 'Antimicrobial, antifungal, anti-inflammatory, immunomodulatory',
-                'habitat': 'Native to Indian subcontinent, grown in tropical regions',
-                'uses': 'Traditional medicine, pesticide, cosmetics, timber',
-                'chemical_components': 'Azadirachtin, nimbin, nimbidin, quercetin'
-            }
-        ]
-        
+
         success_count = 0
         error_count = 0
         
@@ -752,7 +451,6 @@ def home():
         "data_status": data_status,
         "features": [
             "🔍 Smart plant search with auto-generation",
-            "📸 Plant identification from images",
             "🤖 AI-powered data generation",
             "🌐 Web scraping for plant data",
             "📊 Knowledge graph relationships"
@@ -761,8 +459,7 @@ def home():
             "test_connection": "/test_connection",
             "search": "/search/<plant_name>",
             "smart_search": "/smart_search/<plant_name>",
-            "predict": "/predict (upload image or search by name)",
-            "identify_image": "/identify_image (upload plant image)"
+            
         }
     })
 
@@ -784,7 +481,6 @@ def status():
         "models_loading": kg.models_loading,
         "models_loaded": kg.models_loaded,
         "features": {
-            "image_recognition": kg.models_loaded and bool(kg.image_model),
             "text_generation": kg.models_loaded and bool(kg.text_generator),
             "web_scraping": True,
             "auto_generation": True
@@ -801,10 +497,6 @@ def ai_status():
             'models_loaded': kg.models_loaded
         },
         'ai_models': {
-            'image_recognition': {
-                'loaded': kg.models_loaded and bool(kg.image_model and kg.image_processor),
-                'model': 'Salesforce/blip-image-captioning-base' if kg.models_loaded and kg.image_model else 'Loading...' if kg.models_loading else 'Not loaded'
-            },
             'text_generation': {
                 'loaded': kg.models_loaded and bool(kg.text_generator),
                 'model': 'microsoft/DialoGPT-medium' if kg.models_loaded and kg.text_generator else 'Loading...' if kg.models_loading else 'Not loaded'
@@ -817,7 +509,6 @@ def ai_status():
         'capabilities': [
             '🔍 Plant search in existing knowledge graph',
             '🤖 Auto-generation of missing plant data',
-            '📸 Plant identification from images' + (' (loading...)' if kg.models_loading else ' (ready)' if kg.models_loaded else ' (fallback mode)'),
             '🌐 Web scraping from botanical APIs',
             '📊 Relationship mapping in knowledge graph'
         ]
@@ -872,17 +563,6 @@ def test_database_connection():
             "error_type": type(e).__name__
         }), 500
 
-
-    """Load sample plant data endpoint"""
-    try:
-        success_count, error_count = kg.load_sample_data()
-        return jsonify({
-            "success": success_count > 0,
-            "message": f"Successfully loaded {success_count} plants, {error_count} errors",
-            "success_count": success_count,
-            "error_count": error_count,
-            "data_loaded": kg.data_loaded
-        })
     except Exception as e:
         return jsonify({
             "success": False,
@@ -937,143 +617,7 @@ def smart_search_plants(plant_name):
             "results": []
         }), 500
 
-@app.route('/identify_image', methods=['POST'])
-@cross_origin()
-def identify_plant_image():
-    """Plant identification from uploaded image"""
-    try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file uploaded'}), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No selected file'}), 400
-        
-        if file and allowed_file(file.filename):
-            # Save uploaded file
-            filename = secure_filename(file.filename)
-            unique_filename = f"{uuid.uuid4()}_{filename}"
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-            file.save(file_path)
-            
-            # Identify plant from image
-            identified_plant, confidence = kg.identify_plant_from_image(file_path)
-            
-            # Search or generate data for identified plant
-            success, results, response = kg.search_or_generate_plant_data(identified_plant)
-            
-            # Clean up uploaded file
-            try:
-                os.remove(file_path)
-            except:
-                pass
-            
-            return jsonify({
-                'success': True,
-                'identified_plant': identified_plant,
-                'confidence': confidence,
-                'results_count': len(results),
-                'results': results,
-                'formatted_response': response,
-                'filename': unique_filename
-            }), 200
-        
-        return jsonify({'error': 'Invalid file type'}), 400
-        
-    except Exception as e:
-        return jsonify({'error': f"Image identification failed: {str(e)}"}), 500
 
-@app.route('/predict', methods=['GET', 'POST'])
-@cross_origin()
-def predict():
-    """Enhanced plant identification endpoint"""
-    try:
-        if request.method == 'GET':
-            return jsonify({
-                "message": "Enhanced Plant identification endpoint",
-                "capabilities": [
-                    "📸 Upload image for plant identification",
-                    "🔍 Search by plant name with auto-generation",
-                    "🤖 AI-powered data generation for new plants",
-                    "🌐 Web scraping for comprehensive plant data"
-                ],
-                "usage": {
-                    "image_upload": "POST with 'file' in form-data",
-                    "text_search": "POST with JSON {'plant_name': 'name'}"
-                }
-            })
-
-        # Handle file upload for image-based identification
-        if 'file' in request.files:
-            file = request.files['file']
-            if file.filename == '':
-                return jsonify({'error': 'No selected file'}), 400
-
-            if file and allowed_file(file.filename):
-                filename = secure_filename(file.filename)
-                unique_filename = f"{uuid.uuid4()}_{filename}"
-                file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-                file.save(file_path)
-                
-                # Identify plant from image
-                identified_plant, confidence = kg.identify_plant_from_image(file_path)
-                
-                # Get comprehensive data
-                success, results, response = kg.search_or_generate_plant_data(identified_plant)
-                
-                # Clean up
-                try:
-                    os.remove(file_path)
-                except:
-                    pass
-                
-                if success and results:
-                    return jsonify({
-                        'method': 'image_identification',
-                        'identified_plant': identified_plant,
-                        'identification_confidence': confidence,
-                        'species': results[0].get('plant_name', 'Unknown'),
-                        'scientific_name': results[0].get('scientific_name', 'Unknown'),
-                        'family': results[0].get('family', 'Unknown'),
-                        'medicinal_properties': results[0].get('medicinal_properties', ''),
-                        'uses': results[0].get('uses', ''),
-                        'habitat': results[0].get('habitat', ''),
-                        'chemical_components': results[0].get('chemical_components', ''),
-                        'auto_generated': results[0].get('auto_generated', False),
-                        'total_matches': len(results),
-                        'all_results': results,
-                        'filename': unique_filename
-                    }), 200
-                else:
-                    return jsonify({'error': f'Could not identify or generate data for plant in image'}), 404
-
-        # Handle text-based search with JSON
-        elif request.json and 'plant_name' in request.json:
-            plant_name = request.json['plant_name']
-            success, results, response = kg.search_or_generate_plant_data(plant_name)
-            
-            if success and results:
-                return jsonify({
-                    'method': 'text_search_with_generation',
-                    'species': results[0].get('plant_name', 'Unknown'),
-                    'scientific_name': results[0].get('scientific_name', 'Unknown'),
-                    'family': results[0].get('family', 'Unknown'),
-                    'confidence': 0.95,  # High confidence for exact name searches
-                    'medicinal_properties': results[0].get('medicinal_properties', ''),
-                    'uses': results[0].get('uses', ''),
-                    'habitat': results[0].get('habitat', ''),
-                    'chemical_components': results[0].get('chemical_components', ''),
-                    'auto_generated': results[0].get('auto_generated', False),
-                    'total_matches': len(results),
-                    'all_results': results
-                }), 200
-            else:
-                return jsonify({'error': f'Could not find or generate data for: {plant_name}'}), 404
-
-        return jsonify({'error': 'No file or plant_name provided'}), 400
-
-    except Exception as e:
-        return jsonify({'error': f"Internal Server Error: {str(e)}"}), 500
 
 @app.route('/generate_plant_data', methods=['POST'])
 def generate_plant_data():
@@ -1131,13 +675,6 @@ def quick_demo():
         }
         
         if success:
-            # 2. Load sample data
-            success_count, error_count = kg.load_sample_data()
-            results['data_loading'] = {
-                'success': success_count > 0,
-                'success_count': success_count,
-                'error_count': error_count
-            }
             
             # 3. Test existing plant search
             search_success, search_results, search_response = kg.search_plants('Turmeric')
@@ -1162,7 +699,6 @@ def quick_demo():
             'demo_completed': True,
             'results': results,
             'ai_models_loaded': {
-                'image_model': bool(kg.image_model),
                 'text_generator': bool(kg.text_generator)
             }
         })
@@ -1177,10 +713,7 @@ def quick_demo():
     """Check AI models status"""
     return jsonify({
         'ai_models': {
-            'image_recognition': {
-                'loaded': bool(kg.image_model and kg.image_processor),
-                'model': 'Salesforce/blip-image-captioning-base' if kg.image_model else 'Not loaded'
-            },
+          
             'text_generation': {
                 'loaded': bool(kg.text_generator),
                 'model': 'microsoft/DialoGPT-medium' if kg.text_generator else 'Not loaded'
@@ -1193,7 +726,6 @@ def quick_demo():
         'capabilities': [
             '🔍 Plant search in existing knowledge graph',
             '🤖 Auto-generation of missing plant data',
-            '📸 Plant identification from images',
             '🌐 Web scraping from botanical APIs',
             '📊 Relationship mapping in knowledge graph'
         ]
@@ -1204,7 +736,6 @@ if __name__ == "__main__":
     print(f"Neo4j URI: {NEO4J_URI}")
     print(f"Port: {PORT}")
     print("\n🤖 AI Features:")
-    print("- Plant identification from images")
     print("- Auto-generation of missing plant data")
     print("- Web scraping from botanical APIs")
     print("- Smart search with fallback generation")
@@ -1216,7 +747,6 @@ if __name__ == "__main__":
     print("- GET  /search/<plant_name>       - Search existing plants only")
     print("- GET  /smart_search/<plant_name> - Smart search with auto-generation")
     print("- POST /predict                   - Enhanced plant identification")
-    print("- POST /identify_image            - Plant identification from image")
     print("- POST /generate_plant_data       - Manual data generation")
     print("- GET  /quick_demo                - Enhanced demo with AI features")
     
