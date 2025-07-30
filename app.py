@@ -34,9 +34,9 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Neo4j Configuration
-NEO4J_URI = os.environ.get("NEO4J_URI", "neo4j://23ce6517.databases.neo4j.io")
-NEO4J_USERNAME = os.environ.get("NEO4J_USERNAME", "neo4j")
-NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "RVhP1yD2_tby-QkKg8fb6xsrlpat0aRRrEu1oyh2mxc")
+NEO4J_URI = os.environ.get("NEO4J_URI")
+NEO4J_USERNAME = os.environ.get("NEO4J_USERNAME")
+NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD")
 MODEL_CHOICE = os.environ.get("MODEL_CHOICE", "phi3.5")
 
 # Alternative URIs to try if the main one fails
