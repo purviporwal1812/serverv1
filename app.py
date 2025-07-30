@@ -1,19 +1,60 @@
 from dotenv import load_dotenv
 load_dotenv()
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import os
-import pandas as pd
+
+import os, uuid, json, warnings, re
 import numpy as np
-import re
-import warnings
-from typing import Dict, List, Tuple
+import pandas as pd
+from typing import Dict, List, Tuple, Optional
+import time
+import requests
+from PIL import Image
+import io
+import threading
+import base64
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS, cross_origin
+from werkzeug.utils import secure_filename
 from neo4j import GraphDatabase
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 
-warnings.filterwarnings('ignore')
+# **MUST** import TensorFlow here
+import tensorflow as tf
+from tensorflow.keras.preprocessing import image
+from PIL import Image
 
-# Flask app configuration
+# Read critical configuration
+TFLITE_MODEL_PATH      = os.path.join("models", "final_model.tflite")
+CLASS_INDICES_PATH     = os.path.join("models", "class_indices.json")
+UPLOAD_FOLDER          = os.environ.get("UPLOAD_FOLDER", "uploads")
+ALLOWED_EXTENSIONS     = set(os.environ.get("ALLOWED_EXTENSIONS", "png,jpg,jpeg,gif").split(","))
+IMAGE_SIZE_STR         = os.environ.get("IMAGE_SIZE", "224,224")
+PORT                   = int(os.environ.get("PORT", "10000"))
+
+# Parse IMAGE_SIZE once
+try:
+    IMAGE_SIZE = tuple(int(x.strip()) for x in IMAGE_SIZE_STR.split(","))
+    if len(IMAGE_SIZE) != 2:
+        raise ValueError()
+except Exception:
+    raise ValueError("IMAGE_SIZE environment variable must be in the format 'width,height'")
+
+# Initialize Flask
+app = Flask(__name__)
+CORS(app)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# TFLite interpreter setup
+interpreter = tf.lite.Interpreter(model_path=TFLITE_MODEL_PATH)
+interpreter.allocate_tensors()
+input_details  = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+def allowed_file(filename):
+    return (
+        "." in filename and
+        filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+    )
+
 UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "uploads")
 ALLOWED_EXTENSIONS = set(os.environ.get("ALLOWED_EXTENSIONS", "png,jpg,jpeg,gif").split(","))
 PORT = int(os.environ.get("PORT", "10000"))
@@ -62,7 +103,54 @@ class EnhancedPlantKnowledgeGraph:
         except Exception as e:
             print(f"❌ Data generation failed for {plant_name}: {e}")
             return self.create_minimal_plant_data(plant_name)
-    
+
+
+    def predict_species(self, image_path, class_indices_path=None):
+        if class_indices_path is None:
+            class_indices_path = CLASS_INDICES_PATH
+
+        if not os.path.exists(class_indices_path):
+            return {"error": "Class indices file not available. Please check server logs."}
+
+        # Load class indices
+        try:
+            with open(class_indices_path, 'r') as f:
+                class_indices_str = json.load(f)
+                class_indices = {int(v): k for k, v in class_indices_str.items()}
+        except Exception as e:
+            return {"error": f"Could not load class indices: {str(e)}"}
+
+        # Preprocess image
+        try:
+            img = image.load_img(image_path, target_size=IMAGE_SIZE)
+            img_array = image.img_to_array(img).astype("float32") / 255.0
+            img_array = np.expand_dims(img_array, axis=0)
+        except Exception as e:
+            return {"error": f"Could not process image: {str(e)}"}
+
+        # TFLite prediction
+        try:
+            interpreter.set_tensor(input_details[0]['index'], img_array)
+            interpreter.invoke()
+            output_data = interpreter.get_tensor(output_details[0]['index'])
+            prediction = output_data[0]
+
+            predicted_idx = int(np.argmax(prediction))
+            confidence = float(prediction[predicted_idx])
+
+            result = {
+                'species': class_indices[predicted_idx],
+                'confidence': confidence,
+                'top_predictions': [
+                    {
+                        'species': class_indices[int(i)],
+                        'confidence': float(prediction[i])
+                    } for i in np.argsort(-prediction)[:5]
+                ]
+            }
+            return result
+        except Exception as e:
+            return {"error": f"Prediction failed: {str(e)}"}
 
 
     
@@ -441,27 +529,9 @@ def allowed_file(filename):
 
 @app.route('/')
 def home():
-    """Home page showing KG status"""
-    connection_status = "Connected" if kg.connection_tested else "Not Tested"
-    data_status = "Loaded" if kg.data_loaded else "Not Loaded"
-    
-    return jsonify({
-        "message": "Enhanced Plant Knowledge Graph API with Auto-Generation",
-        "connection_status": connection_status,
-        "data_status": data_status,
-        "features": [
-            "🔍 Smart plant search with auto-generation",
-            "🤖 AI-powered data generation",
-            "🌐 Web scraping for plant data",
-            "📊 Knowledge graph relationships"
-        ],
-        "endpoints": {
-            "test_connection": "/test_connection",
-            "search": "/search/<plant_name>",
-            "smart_search": "/smart_search/<plant_name>",
-            
-        }
-    })
+    model_status = "Available" if os.path.exists(TFLITE_MODEL_PATH) else "Not Available"
+    class_indices_status = "Available" if os.path.exists(CLASS_INDICES_PATH) else "Not Available"
+    return render_template('index.html', model_status=model_status, class_indices_status=class_indices_status)
 
 @app.route('/status')
 def status():
@@ -487,6 +557,40 @@ def status():
         },
         "neo4j_uri": NEO4J_URI.split('@')[1] if '@' in NEO4J_URI else "configured"
     })
+
+@app.route('/predict', methods=['GET', 'POST'])
+@cross_origin()
+def predict():
+    try:
+        if request.method == 'GET':
+            return jsonify({"message": "Predict endpoint is accessible."})
+
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file part in request'}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No selected file'}), 400
+
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            unique_filename = f"{uuid.uuid4()}_{filename}"
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+            file.save(file_path)
+
+            prediction_result = kg.predict_species(image_path=file_path)
+
+            if 'error' in prediction_result:
+                return jsonify({'error': prediction_result['error']}), 500
+
+            return jsonify(prediction_result), 200
+
+        return jsonify({'error': 'Invalid file type'}), 400
+
+    except Exception as e:
+        return jsonify({'error': f"Internal Server Error: {str(e)}"}), 500
+
+
 
 @app.route('/ai_status')
 def ai_status():
