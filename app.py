@@ -22,7 +22,7 @@ from tensorflow.keras.preprocessing import image
 from PIL import Image
 
 # Read critical configuration
-KERAS_MODEL_PATH       = os.path.join("models", "plant_model.keras")  # Changed from TFLITE_MODEL_PATH
+KERAS_MODEL_PATH       = os.path.join("models", "plant_model.tflite")  # Changed from TFLITE_MODEL_PATH
 CLASS_INDICES_PATH     = os.path.join("models", "class_indices.json")
 UPLOAD_FOLDER          = os.environ.get("UPLOAD_FOLDER", "uploads")
 ALLOWED_EXTENSIONS     = set(os.environ.get("ALLOWED_EXTENSIONS", "png,jpg,jpeg,gif").split(","))
@@ -43,13 +43,38 @@ CORS(app)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Load Keras model instead of TFLite interpreter
 try:
-    keras_model = tf.keras.models.load_model(KERAS_MODEL_PATH)
-    print(f"✅ Keras model loaded successfully from {KERAS_MODEL_PATH}")
+    tflite_interpreter = tf.lite.Interpreter(model_path=KERAS_MODEL_PATH)  # Change variable name to TFLITE_MODEL_PATH
+    tflite_interpreter.allocate_tensors()
+    print(f"✅ TFLite model loaded successfully from {KERAS_MODEL_PATH}")
+    
+    # Print model info for debugging
+    input_details = tflite_interpreter.get_input_details()
+    output_details = tflite_interpreter.get_output_details()
+    print(f"📋 Input shape: {input_details[0]['shape']}")
+    print(f"📋 Input dtype: {input_details[0]['dtype']}")
+    print(f"📋 Output shape: {output_details[0]['shape']}")
+    print(f"📋 Output dtype: {output_details[0]['dtype']}")
+    
 except Exception as e:
-    print(f"❌ Failed to load Keras model: {e}")
-    keras_model = None
+    print(f"❌ Failed to load TFLite model: {e}")
+    tflite_interpreter = None
+def make_json_serializable(obj):
+        """Convert numpy types to Python native types for JSON serialization"""
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, tuple):
+            return list(obj)
+        elif isinstance(obj, dict):
+            return {k: make_json_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [make_json_serializable(item) for item in obj]
+        else:
+            return obj
 
 def allowed_file(filename):
     return (
@@ -328,9 +353,10 @@ class EnhancedPlantKnowledgeGraph:
             'uses': 'Uses to be researched',
             'chemical_components': 'Components under study'
         }
+ 
     def predict_species(self, image_path, class_indices_path=None):
-        """Predict plant species using Keras model with EfficientNet-style preprocessing
-        Mirrors the Kaggle pipeline: PIL -> resize -> efficientnet.preprocess_input -> model.predict
+        """Predict plant species using TFLite model with EfficientNet-style preprocessing
+        Mirrors the Kaggle pipeline: PIL -> resize -> efficientnet.preprocess_input -> tflite.invoke
         """
         if class_indices_path is None:
             class_indices_path = CLASS_INDICES_PATH
@@ -338,8 +364,8 @@ class EnhancedPlantKnowledgeGraph:
         # Sanity checks
         if not os.path.exists(class_indices_path):
             return {"error": "Class indices file not available. Please check server logs."}
-        if keras_model is None:
-            return {"error": "Keras model not loaded. Please check server logs."}
+        if tflite_interpreter is None:
+            return {"error": "TFLite interpreter not loaded. Please check server logs."}
 
         # Load class mapping and create idx->name mapping like on Kaggle
         try:
@@ -383,9 +409,42 @@ class EnhancedPlantKnowledgeGraph:
         except Exception as e:
             return {"error": f"Could not process image: {str(e)}"}
 
-        # Predict using Keras model (match Kaggle behaviour)
+        # Predict using TFLite interpreter (match Kaggle behaviour)
         try:
-            preds = keras_model.predict(img_batch, verbose=0)
+            # Get input and output tensor details
+            input_details = tflite_interpreter.get_input_details()
+            output_details = tflite_interpreter.get_output_details()
+            
+            # Ensure input data type matches model requirements
+            input_dtype = input_details[0]['dtype']
+            if input_dtype == np.uint8:
+                # Model expects uint8 input (0-255 range)
+                if img_arr.min() >= 0 and img_arr.max() <= 1:
+                    # Data is normalized [0,1], scale to [0,255]
+                    img_batch = (img_batch * 255.0).astype(np.uint8)
+                else:
+                    # Data might already be in correct range or preprocessed differently
+                    img_batch = img_batch.astype(np.uint8)
+            elif input_dtype == np.float32:
+                # Model expects float32 input (already correct)
+                img_batch = img_batch.astype(np.float32)
+            else:
+                # Handle other data types if needed
+                img_batch = img_batch.astype(input_dtype)
+            
+            # Verify input shape matches model requirements
+            expected_shape = input_details[0]['shape']
+            if img_batch.shape != tuple(expected_shape):
+                return {"error": f"Input shape mismatch. Expected: {expected_shape}, Got: {img_batch.shape}"}
+            
+            # Set input tensor
+            tflite_interpreter.set_tensor(input_details[0]['index'], img_batch)
+            
+            # Run inference
+            tflite_interpreter.invoke()
+            
+            # Get output tensor
+            preds = tflite_interpreter.get_tensor(output_details[0]['index'])
 
             # If model returns multiple outputs, assume first is logits/probs
             if isinstance(preds, (list, tuple)):
@@ -439,11 +498,16 @@ class EnhancedPlantKnowledgeGraph:
                 "confidence": confidence,
                 "top_predictions": top_predictions,
                 "preprocess_used": preprocess_used,
-                "raw_prediction_shape": preds.shape
+                "raw_prediction_shape": list(preds.shape),  # Convert to list for JSON serialization
+                "model_type": "TFLite",
+                "input_dtype": str(input_dtype),
+                "expected_input_shape": list(expected_shape)  # Convert to list for JSON serialization
             }
+            result = make_json_serializable(result)
+
             return result
         except Exception as e:
-            return {"error": f"Prediction failed: {str(e)}"}
+            return {"error": f"TFLite prediction failed: {str(e)}"}
 
     
     def search_or_generate_plant_data(self, plant_name: str) -> Tuple[bool, List[Dict], str]:
@@ -712,6 +776,9 @@ class EnhancedPlantKnowledgeGraph:
         else:
             error_msg = results if not success else "No matches found"
             return False, [], f"Search failed: {error_msg}"
+
+
+
     
     def format_search_results(self, plant_data_list: List[Dict], original_query: str) -> str:
         """Format search results for display"""
@@ -1150,8 +1217,8 @@ def predict():
             # Add metadata to result
             prediction_result['processing_time'] = f"{prediction_time:.3f}s"
             prediction_result['timestamp'] = time.strftime("%Y-%m-%d %H:%M:%S")
-            prediction_result['model_type'] = 'Keras'
-            prediction_result['image_size'] = IMAGE_SIZE
+            prediction_result['image_size'] = list(IMAGE_SIZE) 
+            
 
             return jsonify(prediction_result), 200
 
