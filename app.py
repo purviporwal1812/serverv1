@@ -22,7 +22,7 @@ from tensorflow.keras.preprocessing import image
 from PIL import Image
 
 # Read critical configuration
-TFLITE_MODEL_PATH      = os.path.join("models", "final_model.tflite")
+TFLITE_MODEL_PATH      = os.path.join("models", "plant_model.tflite")
 CLASS_INDICES_PATH     = os.path.join("models", "class_indices.json")
 UPLOAD_FOLDER          = os.environ.get("UPLOAD_FOLDER", "uploads")
 ALLOWED_EXTENSIONS     = set(os.environ.get("ALLOWED_EXTENSIONS", "png,jpg,jpeg,gif").split(","))
