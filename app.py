@@ -22,7 +22,7 @@ from tensorflow.keras.preprocessing import image
 from PIL import Image
 
 # Read critical configuration
-TFLITE_MODEL_PATH      = os.path.join("models", "plant_model.tflite")
+KERAS_MODEL_PATH       = os.path.join("models", "plant_model.keras")  # Changed from TFLITE_MODEL_PATH
 CLASS_INDICES_PATH     = os.path.join("models", "class_indices.json")
 UPLOAD_FOLDER          = os.environ.get("UPLOAD_FOLDER", "uploads")
 ALLOWED_EXTENSIONS     = set(os.environ.get("ALLOWED_EXTENSIONS", "png,jpg,jpeg,gif").split(","))
@@ -43,11 +43,13 @@ CORS(app)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# TFLite interpreter setup
-interpreter = tf.lite.Interpreter(model_path=TFLITE_MODEL_PATH)
-interpreter.allocate_tensors()
-input_details  = interpreter.get_input_details()
-output_details = interpreter.get_output_details()
+# Load Keras model instead of TFLite interpreter
+try:
+    keras_model = tf.keras.models.load_model(KERAS_MODEL_PATH)
+    print(f"✅ Keras model loaded successfully from {KERAS_MODEL_PATH}")
+except Exception as e:
+    print(f"❌ Failed to load Keras model: {e}")
+    keras_model = None
 
 def allowed_file(filename):
     return (
@@ -55,6 +57,7 @@ def allowed_file(filename):
         filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
     )
 
+# Remove duplicate variable declarations
 UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "uploads")
 ALLOWED_EXTENSIONS = set(os.environ.get("ALLOWED_EXTENSIONS", "png,jpg,jpeg,gif").split(","))
 PORT = int(os.environ.get("PORT", "10000"))
@@ -325,53 +328,123 @@ class EnhancedPlantKnowledgeGraph:
             'uses': 'Uses to be researched',
             'chemical_components': 'Components under study'
         }
-
     def predict_species(self, image_path, class_indices_path=None):
+        """Predict plant species using Keras model with EfficientNet-style preprocessing
+        Mirrors the Kaggle pipeline: PIL -> resize -> efficientnet.preprocess_input -> model.predict
+        """
         if class_indices_path is None:
             class_indices_path = CLASS_INDICES_PATH
 
+        # Sanity checks
         if not os.path.exists(class_indices_path):
             return {"error": "Class indices file not available. Please check server logs."}
+        if keras_model is None:
+            return {"error": "Keras model not loaded. Please check server logs."}
 
-        # Load class indices
+        # Load class mapping and create idx->name mapping like on Kaggle
         try:
-            with open(class_indices_path, 'r') as f:
-                class_indices_str = json.load(f)
-                class_indices = {int(v): k for k, v in class_indices_str.items()}
+            with open(class_indices_path, "r") as f:
+                class_map = json.load(f)
+
+            # If the file is name->idx (common), invert to idx->name
+            # If it's idx->name, just coerce keys to int
+            if all(not str(k).isdigit() for k in class_map.keys()):
+                # name -> idx  (values may be int or str)
+                idx_to_name = {int(v): str(k) for k, v in class_map.items()}
+            else:
+                # idx -> name
+                idx_to_name = {int(k): str(v) for k, v in class_map.items()}
         except Exception as e:
-            return {"error": f"Could not load class indices: {str(e)}"}
+            return {"error": f"Could not load/parse class indices: {str(e)}"}
 
-        # Preprocess image
+        # Load & preprocess image using same pipeline as Kaggle (EfficientNet preprocess_input)
         try:
-            img = image.load_img(image_path, target_size=IMAGE_SIZE)
-            img_array = image.img_to_array(img).astype("float32") / 255.0
-            img_array = np.expand_dims(img_array, axis=0)
+            from PIL import Image
+            img = Image.open(image_path).convert("RGB").resize((IMAGE_SIZE[0], IMAGE_SIZE[1]), Image.BILINEAR)
+            img_arr = np.array(img).astype(np.float32)
+
+            # Prefer EfficientNet preprocess_input (same as your Kaggle notebook)
+            try:
+                from tensorflow.keras.applications.efficientnet import preprocess_input
+                img_arr = preprocess_input(img_arr)
+                preprocess_used = "efficientnet.preprocess_input"
+            except Exception:
+                # Fallback to generic imagenet preprocess_input if available
+                try:
+                    from tensorflow.keras.applications.imagenet_utils import preprocess_input
+                    img_arr = preprocess_input(img_arr)
+                    preprocess_used = "imagenet.preprocess_input"
+                except Exception:
+                    # Last resort: simple scaling [0,1]
+                    img_arr = img_arr / 255.0
+                    preprocess_used = "scaled_0_1"
+
+            img_batch = np.expand_dims(img_arr, axis=0)
         except Exception as e:
             return {"error": f"Could not process image: {str(e)}"}
 
-        # TFLite prediction
+        # Predict using Keras model (match Kaggle behaviour)
         try:
-            interpreter.set_tensor(input_details[0]['index'], img_array)
-            interpreter.invoke()
-            output_data = interpreter.get_tensor(output_details[0]['index'])
-            prediction = output_data[0]
+            preds = keras_model.predict(img_batch, verbose=0)
 
-            predicted_idx = int(np.argmax(prediction))
-            confidence = float(prediction[predicted_idx])
+            # If model returns multiple outputs, assume first is logits/probs
+            if isinstance(preds, (list, tuple)):
+                preds = preds[0]
+
+            preds = np.asarray(preds)
+            # If batch dimension present, reduce to first batch
+            if preds.ndim == 2 and preds.shape[0] == 1:
+                preds = preds[0]
+            elif preds.ndim > 2:
+                # Unexpected shape
+                preds = preds.reshape((preds.shape[0], -1))
+                if preds.shape[0] == 1:
+                    preds = preds[0]
+
+            # Now preds should be 1D array of logits/probs
+            if preds.ndim != 1:
+                return {"error": f"Unexpected prediction shape: {preds.shape}"}
+
+            # Same as your Kaggle code: argmax + max
+            predicted_idx = int(np.argmax(preds))
+            confidence = float(np.max(preds))
+
+            # If outputs are logits (not probabilities), confidence may not be in [0,1].
+            # But we return exactly as your Kaggle snippet does; if you want probabilities,
+            # set apply_softmax=True below and it'll convert logits -> softmax probs.
+            apply_softmax = False
+
+            probs = preds
+            if apply_softmax:
+                try:
+                    import tensorflow as _tf
+                    probs = _tf.nn.softmax(preds).numpy()
+                except Exception:
+                    e_x = np.exp(preds - np.max(preds))
+                    probs = e_x / e_x.sum()
+                predicted_idx = int(np.argmax(probs))
+                confidence = float(np.max(probs))
+
+            # Top-5 (or fewer if classes < 5)
+            top_k = min(5, probs.shape[0])
+            top_idxs = np.argsort(-probs)[:top_k]
+
+            top_predictions = [
+                {"species": idx_to_name.get(int(i), str(int(i))), "confidence": float(probs[int(i)])}
+                for i in top_idxs
+            ]
 
             result = {
-                'species': class_indices[predicted_idx],
-                'confidence': confidence,
-                'top_predictions': [
-                    {
-                        'species': class_indices[int(i)],
-                        'confidence': float(prediction[i])
-                    } for i in np.argsort(-prediction)[:5]
-                ]
+                "species": idx_to_name.get(predicted_idx, str(predicted_idx)),
+                "confidence": confidence,
+                "top_predictions": top_predictions,
+                "preprocess_used": preprocess_used,
+                "raw_prediction_shape": preds.shape
             }
             return result
         except Exception as e:
             return {"error": f"Prediction failed: {str(e)}"}
+
     
     def search_or_generate_plant_data(self, plant_name: str) -> Tuple[bool, List[Dict], str]:
         """Search for plant data, generate if not found using legitimate APIs"""
@@ -673,14 +746,13 @@ class EnhancedPlantKnowledgeGraph:
         
         return response
 
-# Initialize Enhanced Knowledge Graph (removed MODEL_CHOICE parameter)
+# Initialize Enhanced Knowledge Graph
 kg = EnhancedPlantKnowledgeGraph(NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # Flask Routes - All Endpoints Implementation
-
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS, cross_origin
 from werkzeug.utils import secure_filename
@@ -699,7 +771,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 @app.route('/')
 def home():
     """Home page with API information and model status"""
-    model_status = "Available" if os.path.exists(TFLITE_MODEL_PATH) else "Not Available"
+    model_status = "Available" if os.path.exists(KERAS_MODEL_PATH) else "Not Available"  # Changed
     class_indices_status = "Available" if os.path.exists(CLASS_INDICES_PATH) else "Not Available"
     
     return render_template('index.html', 
@@ -721,7 +793,7 @@ def status():
             "wikipedia_integration": True,
             "gbif_integration": True,
             "auto_generation": True,
-            "image_classification": os.path.exists(TFLITE_MODEL_PATH),
+            "image_classification": os.path.exists(KERAS_MODEL_PATH),
             "knowledge_graph": bool(kg.driver)
         },
         "neo4j_uri": NEO4J_URI.split('@')[1] if '@' in NEO4J_URI else "configured",
@@ -922,8 +994,8 @@ def api_status():
         },
         'features': {
             'image_classification': {
-                'available': os.path.exists(TFLITE_MODEL_PATH),
-                'model': 'TensorFlow Lite',
+                'available': os.path.exists(KERAS_MODEL_PATH),
+                'model': 'Keras',
                 'supported_formats': ['png', 'jpg', 'jpeg', 'gif']
             },
             'knowledge_graph': {
@@ -1033,7 +1105,7 @@ def predict():
                 "required": "file (image)",
                 "supported_formats": list(ALLOWED_EXTENSIONS),
                 "max_file_size": "10MB",
-                "model_available": os.path.exists(TFLITE_MODEL_PATH)
+                "model_available": os.path.exists(KERAS_MODEL_PATH)
             })
 
         # Validate file upload
@@ -1078,7 +1150,7 @@ def predict():
             # Add metadata to result
             prediction_result['processing_time'] = f"{prediction_time:.3f}s"
             prediction_result['timestamp'] = time.strftime("%Y-%m-%d %H:%M:%S")
-            prediction_result['model_type'] = 'TensorFlow Lite'
+            prediction_result['model_type'] = 'Keras'
             prediction_result['image_size'] = IMAGE_SIZE
 
             return jsonify(prediction_result), 200
@@ -1180,7 +1252,7 @@ def health_check():
         'services': {
             'flask_app': True,
             'neo4j_connection': bool(kg.driver),
-            'tflite_model': os.path.exists(TFLITE_MODEL_PATH),
+            'model': os.path.exists(KERAS_MODEL_PATH),
             'class_indices': os.path.exists(CLASS_INDICES_PATH)
         }
     })
