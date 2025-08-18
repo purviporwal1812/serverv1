@@ -37,3 +37,4 @@ ipython==8.12.3
 pillow==9.5.0
 flask-cors
 kagglehub
+pymongo==4.8.0
