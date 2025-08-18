@@ -749,7 +749,130 @@ class EnhancedPlantKnowledgeGraph:
         '''
         
         return cypher
-    
+
+    def template_keyword_cypher(self, keywords: List[str]) -> str:
+        """Build a Cypher query that finds plants where uses/medicinal_properties/
+        chemical_components or MedicinalProperty descriptions contain any keyword.
+        Returns only plant_name, uses, family_name, and common_name.
+        """
+        kw_clauses = []
+        mp_clauses = []
+        for k in keywords:
+            k_clean = str(k).replace("'", "''").replace('"', '\\"').strip()
+            if not k_clean:
+                continue
+
+            plant_clause = (
+                f"toLower(coalesce(p.uses, '')) CONTAINS toLower('{k_clean}') OR "
+                f"toLower(coalesce(p.medicinal_properties, '')) CONTAINS toLower('{k_clean}') OR "
+                f"toLower(coalesce(p.chemical_components, '')) CONTAINS toLower('{k_clean}')"
+            )
+            mp_clause = f"(mp.description IS NOT NULL AND toLower(coalesce(mp.description, '')) CONTAINS toLower('{k_clean}'))"
+
+            kw_clauses.append(f"({plant_clause})")
+            mp_clauses.append(mp_clause)
+
+        where_main = " OR ".join(kw_clauses) if kw_clauses else "false"
+        where_mp = " OR ".join(mp_clauses) if mp_clauses else "false"
+        where_clause = f"({where_main}) OR ({where_mp})"
+
+        cypher = f"""
+        MATCH (p:Plant)
+        OPTIONAL MATCH (p)-[:HAS_MEDICINAL_PROPERTY]->(mp:MedicinalProperty)
+        WHERE {where_clause}
+        OPTIONAL MATCH (p)-[:BELONGS_TO_FAMILY]->(f:Family)
+        RETURN 
+            p.plant_name AS plant_name,
+            p.uses AS uses,
+            f.name AS family_name,
+            p.common_name AS common_name
+        LIMIT 500
+        """
+        return cypher
+
+
+
+
+
+    def search_by_keywords(self, keywords_input: str, fuzzy_threshold: float = 0.65) -> Tuple[bool, List[Dict], str]:
+        """Search KG for plants matching any of the comma/space-separated keywords.
+        Returns only plant_name, uses, family_name, and common_name.
+        """
+        try:
+            import difflib
+
+            raw = str(keywords_input).strip()
+            if ',' in raw:
+                orig_keywords = [k.strip() for k in raw.split(',') if k.strip()]
+            else:
+                orig_keywords = [k.strip() for k in raw.split() if k.strip()]
+
+            if not orig_keywords:
+                return False, [], "No keywords provided"
+
+            synonym_map = {
+                'fever': ['antipyretic', 'pyrexia'],
+                'cold': ['cough', 'common cold', 'rhinitis', 'coryza'],
+                'astringent': ['styptic', 'astringency'],
+                'pain': ['analgesic', 'ache'],
+                'inflammation': ['antiinflammatory', 'anti-inflammatory', 'anti inflammatory'],
+                'diarrhoea': ['diarrhea', 'loose stool', 'dysentery']
+            }
+
+            cypher = self.template_keyword_cypher(orig_keywords)
+            success, records = self.query_plant_data(cypher)
+            if not success:
+                return False, [], f"Query failed: {records}"
+
+            expanded = set(orig_keywords)
+            for k in orig_keywords:
+                for syn in synonym_map.get(k.lower(), []):
+                    expanded.add(syn)
+
+            processed = []
+            for r in records:
+                plant = dict(r)
+                combined_text = str(plant.get('uses', '') or '').lower()
+                tokens = re.findall(r"\w+", combined_text)
+
+                matched = []
+                for k in sorted(list(expanded)):
+                    k_low = k.lower()
+                    reason = None
+                    if k_low in combined_text:
+                        reason = 'substring'
+                    elif tokens:
+                        close = difflib.get_close_matches(k_low, tokens, n=1, cutoff=fuzzy_threshold)
+                        if close:
+                            reason = f"fuzzy_token_match:{close[0]}"
+                    if reason:
+                        matched.append({"term": k, "reason": reason})
+
+                if matched:
+                    plant['matched_terms'] = matched
+                    processed.append(plant)
+
+            # formatted response
+            resp_lines = [f"Plants matching keywords: {', '.join(orig_keywords)}", f"Found {len(processed)} plants\n"]
+            for i, p in enumerate(processed, 1):
+                matched_str = ", ".join([f"{m['term']}({m['reason']})" for m in p.get('matched_terms', [])])
+                resp_lines.append(f"{i}. {p.get('plant_name','Unknown')} (matched: {matched_str})")
+                if p.get('common_name'):
+                    resp_lines.append(f"   Common Name: {p.get('common_name')}")
+                if p.get('family_name'):
+                    resp_lines.append(f"   Family: {p.get('family_name')}")
+                if p.get('uses'):
+                    resp_lines.append(f"   Uses: {p.get('uses')[:200]}{'...' if len(str(p.get('uses',''))) > 200 else ''}")
+                resp_lines.append("")
+
+            formatted_response = "\n".join(resp_lines)
+            return True, processed, formatted_response
+
+        except Exception as e:
+            return False, [], f"Keyword search failed: {str(e)}"
+
+
+
     def query_plant_data(self, cypher_query: str) -> Tuple[bool, List[Dict]]:
         """Execute enhanced query"""
         if not self.driver:
@@ -776,7 +899,6 @@ class EnhancedPlantKnowledgeGraph:
         else:
             error_msg = results if not success else "No matches found"
             return False, [], f"Search failed: {error_msg}"
-
 
 
     
@@ -1116,6 +1238,35 @@ def search_plants(plant_name):
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         }), 500
 
+@app.route('/search_by_keywords/<keywords>')
+def search_by_keywords_route(keywords):
+    """Search plants by keyword(s). Example: /search_by_keywords/cold,fever or /search_by_keywords/astringent"""
+    try:
+        start_time = time.time()
+        success, results, response = kg.search_by_keywords(keywords)
+        search_time = time.time() - start_time
+
+        return jsonify({
+            "success": success,
+            "query": keywords,
+            "results_count": len(results),
+            "results": results,
+            "formatted_response": response,
+            "search_type": "keyword_search",
+            "search_time": f"{search_time:.3f}s",
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "query": keywords,
+            "message": f"Keyword search failed: {str(e)}",
+            "results_count": 0,
+            "results": [],
+            "error_type": type(e).__name__,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        }), 500
+
 @app.route('/smart_search/<plant_name>')
 def smart_search_plants(plant_name):
     """Smart search with API-based auto-generation capability"""
@@ -1213,6 +1364,63 @@ def predict():
                     'processing_time': f"{prediction_time:.3f}s",
                     'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
                 }), 500
+            
+            predicted_species = prediction_result['species']
+            
+            # Connect to MongoDB and fetch image URLs
+            MONGODB_URI = "mongodb+srv://0801cs221134:shi1234@cluster0.q3mah8x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+            
+            try:
+                # Connect to MongoDB
+                client = MongoClient(MONGODB_URI)
+                db = client["plant_database"]  # Database name from the image
+                collection = db["plant_images"]  # Collection name from the image
+                
+                # Format the species name to match the MongoDB format
+                # Remove underscores and try different formats since names might vary
+                species_name = predicted_species.replace('_', ' ')
+                
+                # Create a regex pattern for flexible matching
+                # This will match the species name regardless of spaces, underscores, or case
+                pattern = re.compile(f"^{species_name.replace(' ', '[ _]')}$", re.IGNORECASE)
+                
+                # Try exact match first
+                plant_data = collection.find_one({"plant_name": predicted_species})
+                
+                # If not found, try with spaces instead of underscores
+                if not plant_data:
+                    plant_data = collection.find_one({"plant_name": species_name})
+                
+                # If still not found, try with regex pattern
+                if not plant_data:
+                    plant_data = collection.find_one({"plant_name": {"$regex": pattern}})
+                
+                # If found, add image URLs to the result
+                if plant_data and 'image_urls' in plant_data:
+                    prediction_result['db_image_urls'] = plant_data['image_urls']
+                else:
+                    prediction_result['db_image_urls'] = []
+                    prediction_result['db_note'] = "No matching plant found in database"
+                
+                # Check all top predictions for matches
+                db_matches = []
+                for pred in prediction_result['top_predictions']:
+                    species = pred['species'].replace('_', ' ')
+                    match = collection.find_one({"plant_name": {"$regex": f".*{species}.*", "$options": "i"}})
+                    if match:
+                        db_matches.append({
+                            "species": pred['species'],
+                            "confidence": pred['confidence'],
+                            "db_match": match['plant_name'],
+                            "image_urls": match.get('image_urls', [])
+                        })
+                
+                prediction_result['db_matches'] = db_matches
+                
+            except Exception as db_error:
+                prediction_result['db_error'] = str(db_error)
+                prediction_result['db_error_type'] = type(db_error).__name__
+            
 
             # Add metadata to result
             prediction_result['processing_time'] = f"{prediction_time:.3f}s"
@@ -1350,7 +1558,7 @@ def list_endpoints():
             'POST /predict': 'Upload image for plant species identification'
         },
         'data_generation': {
-            'POST /generate_plant_data': 'Manual plant data generation from APIs'
+            'POST /generate_plant_data': 'Manual data generation from APIs'
         }
     }
     
@@ -1411,6 +1619,7 @@ if __name__ == "__main__":
     print("SEARCH:")
     print("- GET  /search/<plant_name>       - Search existing plants")
     print("- GET  /smart_search/<plant_name> - Smart search with API generation")
+    print("- GET  /search_by_keywords/<keywords> - Keyword-based plant search")
     
     print("PREDICTION:")
     print("- GET  /predict                   - Prediction info")
