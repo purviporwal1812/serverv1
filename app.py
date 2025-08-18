@@ -5,6 +5,7 @@ import os, uuid, json, warnings, re
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Optional
+from pymongo import MongoClient
 import time
 import requests
 from PIL import Image
@@ -1201,6 +1202,7 @@ def predict():
             prediction_result = kg.predict_species(image_path=file_path)
             prediction_time = time.time() - start_time
 
+
             # Clean up uploaded file
             try:
                 os.remove(file_path)
@@ -1214,12 +1216,67 @@ def predict():
                     'timestamp': time.strftime("%Y-%m-%d %H:%M:%S")
                 }), 500
 
+            predicted_species = prediction_result['species']
+            
+            # Connect to MongoDB and fetch image URLs
+            MONGODB_URI = "mongodb+srv://0801cs221134:shi1234@cluster0.q3mah8x.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+            
+            try:
+                # Connect to MongoDB
+                client = MongoClient(MONGODB_URI)
+                db = client["plant_database"]  # Database name from the image
+                collection = db["plant_images"]  # Collection name from the image
+                
+                # Format the species name to match the MongoDB format
+                # Remove underscores and try different formats since names might vary
+                species_name = predicted_species.replace('_', ' ')
+                
+                # Create a regex pattern for flexible matching
+                # This will match the species name regardless of spaces, underscores, or case
+                pattern = re.compile(f"^{species_name.replace(' ', '[ _]')}$", re.IGNORECASE)
+                
+                # Try exact match first
+                plant_data = collection.find_one({"plant_name": predicted_species})
+                
+                # If not found, try with spaces instead of underscores
+                if not plant_data:
+                    plant_data = collection.find_one({"plant_name": species_name})
+                
+                # If still not found, try with regex pattern
+                if not plant_data:
+                    plant_data = collection.find_one({"plant_name": {"$regex": pattern}})
+                
+                # If found, add image URLs to the result
+                if plant_data and 'image_urls' in plant_data:
+                    prediction_result['db_image_urls'] = plant_data['image_urls']
+                else:
+                    prediction_result['db_image_urls'] = []
+                    prediction_result['db_note'] = "No matching plant found in database"
+                
+                # Check all top predictions for matches
+                db_matches = []
+                for pred in prediction_result['top_predictions']:
+                    species = pred['species'].replace('_', ' ')
+                    match = collection.find_one({"plant_name": {"$regex": f".*{species}.*", "$options": "i"}})
+                    if match:
+                        db_matches.append({
+                            "species": pred['species'],
+                            "confidence": pred['confidence'],
+                            "db_match": match['plant_name'],
+                            "image_urls": match.get('image_urls', [])
+                        })
+                
+                prediction_result['db_matches'] = db_matches
+                
+            except Exception as db_error:
+                prediction_result['db_error'] = str(db_error)
+                prediction_result['db_error_type'] = type(db_error).__name__
+            
             # Add metadata to result
             prediction_result['processing_time'] = f"{prediction_time:.3f}s"
             prediction_result['timestamp'] = time.strftime("%Y-%m-%d %H:%M:%S")
-            prediction_result['image_size'] = list(IMAGE_SIZE) 
+            prediction_result['image_size'] = list(IMAGE_SIZE)
             
-
             return jsonify(prediction_result), 200
 
         return jsonify({
