@@ -550,8 +550,8 @@ class EnhancedPlantKnowledgeGraph:
         except Exception as e:
             error_msg = f"Failed to search or generate data for '{plant_name}': {str(e)}"
             return False, [], error_msg
+        
 
-    # Include all previous methods from the original class
     def _establish_connection(self):
         """Try to establish connection with multiple URI formats"""
         uris_to_try = [self.uri]
@@ -1276,6 +1276,14 @@ def smart_search_plants(plant_name):
         success, results, response = kg.search_or_generate_plant_data(plant_name)
         search_time = time.time() - start_time
         
+        # Filter results: if more than 1 result, prioritize KG results (auto_generated is null/False)
+        if len(results) > 1:
+            kg_results = [result for result in results if not result.get('auto_generated', False)]
+            if kg_results:
+                results = kg_results
+                # Re-format response with filtered results
+                response = kg.format_search_results(results, plant_name)
+        
         # Determine if data was generated
         was_generated = any(result.get('auto_generated', False) for result in results)
         data_sources_used = []
@@ -1307,7 +1315,6 @@ def smart_search_plants(plant_name):
             "error_type": type(e).__name__,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         }), 500
-
 # =============================================================================
 # IMAGE PREDICTION ENDPOINTS
 # =============================================================================
