@@ -1276,16 +1276,50 @@ def smart_search_plants(plant_name):
         success, results, response = kg.search_or_generate_plant_data(plant_name)
         search_time = time.time() - start_time
         
-        # Filter results: if more than 1 result, prioritize KG results (auto_generated is null/False)
-        if len(results) > 1:
-            kg_results = [result for result in results if not result.get('auto_generated', False)]
-            if kg_results:
-                results = kg_results
-                # Re-format response with filtered results
+        # Remove duplicates and ensure single result
+        if results:
+            # Remove duplicates based on plant name (case-insensitive)
+            seen_names = set()
+            unique_results = []
+            
+            for result in results:
+                # Try different possible keys for plant name
+                plant_key = ''
+                for key in ['name', 'scientific_name', 'plant_name', 'common_name']:
+                    if result.get(key):
+                        plant_key = str(result.get(key)).lower().strip()
+                        break
+                
+                # If no name found, use a combination of available fields as identifier
+                if not plant_key:
+                    identifier_parts = []
+                    for key in result.keys():
+                        if result.get(key) and isinstance(result[key], str):
+                            identifier_parts.append(str(result[key]).lower().strip())
+                    plant_key = '|'.join(identifier_parts[:3])  # Use first 3 fields as identifier
+                
+                if plant_key and plant_key not in seen_names:
+                    seen_names.add(plant_key)
+                    unique_results.append(result)
+            
+            # Filter results: if more than 1 unique result, prioritize KG results (auto_generated is null/False)
+            if len(unique_results) > 1:
+                kg_results = [result for result in unique_results if not result.get('auto_generated', False)]
+                if kg_results:
+                    unique_results = kg_results
+            
+            # Always return only the first/best result to ensure count = 1
+            results = unique_results[:1] if unique_results else results[:1]  # Fallback to original first result
+            
+            # Re-format response with the single result
+            if results:
                 response = kg.format_search_results(results, plant_name)
+        else:
+            # If no results, ensure results is empty list
+            results = []
         
         # Determine if data was generated
-        was_generated = any(result.get('auto_generated', False) for result in results)
+        was_generated = any(result.get('auto_generated', False) for result in results) if results else False
         data_sources_used = []
         
         if was_generated:
@@ -1296,7 +1330,7 @@ def smart_search_plants(plant_name):
         return jsonify({
             "success": success,
             "query": plant_name,
-            "results_count": len(results),
+            "results_count": len(results),  # This will always be 1 or 0
             "results": results,
             "formatted_response": response,
             "search_type": "smart_search_with_api_generation",
@@ -1315,6 +1349,137 @@ def smart_search_plants(plant_name):
             "error_type": type(e).__name__,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         }), 500
+
+
+def search_or_generate_plant_data(self, plant_name: str) -> Tuple[bool, List[Dict], str]:
+    """Search for plant data, generate if not found using legitimate APIs"""
+    try:
+        # First, try to search existing data
+        success, results, response = self.search_plants(plant_name)
+        
+        # Remove duplicates from initial search results
+        if success and results:
+            seen_names = set()
+            unique_results = []
+            
+            for result in results:
+                # Try different possible keys for plant name
+                plant_key = ''
+                for key in ['name', 'scientific_name', 'plant_name', 'common_name']:
+                    if result.get(key):
+                        plant_key = str(result.get(key)).lower().strip()
+                        break
+                
+                # If no name found, use a combination of available fields as identifier
+                if not plant_key:
+                    identifier_parts = []
+                    for key in result.keys():
+                        if result.get(key) and isinstance(result[key], str):
+                            identifier_parts.append(str(result[key]).lower().strip())
+                    plant_key = '|'.join(identifier_parts[:3])  # Use first 3 fields as identifier
+                
+                if plant_key and plant_key not in seen_names:
+                    seen_names.add(plant_key)
+                    unique_results.append(result)
+            
+            if unique_results:
+                # Return only the first unique result
+                final_results = unique_results[:1]
+                response = self.format_search_results(final_results, plant_name)
+                return success, final_results, response
+        
+        # If not found, generate new data from APIs
+        print(f"🔄 Plant '{plant_name}' not found in KG. Fetching from APIs...")
+        
+        # Generate comprehensive plant data from APIs
+        new_plant_data = self.generate_plant_data_from_web(plant_name)
+        
+        # Insert into knowledge graph
+        cypher_query = self.template_enhanced_cypher_insert(new_plant_data)
+        insert_success, insert_message = self.insert_plant_data(cypher_query)
+        
+        if insert_success:
+            print(f"✅ Successfully added {plant_name} to knowledge graph")
+            
+            # Now search again to return the newly added data
+            success, results, response = self.search_plants(plant_name)
+            
+            if success and results:
+                # Ensure only one result is returned
+                final_results = results[:1]
+                response = self.format_search_results(final_results, plant_name)
+                response = f"🆕 Generated and added new plant data for '{plant_name}' from APIs\n\n" + response
+                return True, final_results, response
+        
+        # If insertion failed, return the generated data anyway (single result)
+        results = [new_plant_data]
+        response = self.format_search_results(results, plant_name)
+        response = f"🆕 Generated plant data for '{plant_name}' from APIs (not saved to database)\n\n" + response
+        
+        return True, results, response
+        
+    except Exception as e:
+        error_msg = f"Failed to search or generate data for '{plant_name}': {str(e)}"
+        return False, [], error_msg
+
+def search_or_generate_plant_data(self, plant_name: str) -> Tuple[bool, List[Dict], str]:
+    """Search for plant data, generate if not found using legitimate APIs"""
+    try:
+        # First, try to search existing data
+        success, results, response = self.search_plants(plant_name)
+        
+        # Remove duplicates from initial search results
+        if success and results:
+            seen_names = set()
+            unique_results = []
+            
+            for result in results:
+                plant_key = result.get('name', '').lower().strip()
+                if plant_key and plant_key not in seen_names:
+                    seen_names.add(plant_key)
+                    unique_results.append(result)
+            
+            if unique_results:
+                # Return only the first unique result
+                final_results = unique_results[:1]
+                response = self.format_search_results(final_results, plant_name)
+                return success, final_results, response
+        
+        # If not found, generate new data from APIs
+        print(f"🔄 Plant '{plant_name}' not found in KG. Fetching from APIs...")
+        
+        # Generate comprehensive plant data from APIs
+        new_plant_data = self.generate_plant_data_from_web(plant_name)
+        
+        # Insert into knowledge graph
+        cypher_query = self.template_enhanced_cypher_insert(new_plant_data)
+        insert_success, insert_message = self.insert_plant_data(cypher_query)
+        
+        if insert_success:
+            print(f"✅ Successfully added {plant_name} to knowledge graph")
+            
+            # Now search again to return the newly added data
+            success, results, response = self.search_plants(plant_name)
+            
+            if success and results:
+                # Ensure only one result is returned
+                final_results = results[:1]
+                response = self.format_search_results(final_results, plant_name)
+                response = f"🆕 Generated and added new plant data for '{plant_name}' from APIs\n\n" + response
+                return True, final_results, response
+        
+        # If insertion failed, return the generated data anyway (single result)
+        results = [new_plant_data]
+        response = self.format_search_results(results, plant_name)
+        response = f"🆕 Generated plant data for '{plant_name}' from APIs (not saved to database)\n\n" + response
+        
+        return True, results, response
+        
+    except Exception as e:
+        error_msg = f"Failed to search or generate data for '{plant_name}': {str(e)}"
+        return False, [], error_msg
+
+
 # =============================================================================
 # IMAGE PREDICTION ENDPOINTS
 # =============================================================================
