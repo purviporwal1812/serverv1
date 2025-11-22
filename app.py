@@ -752,14 +752,22 @@ class EnhancedPlantKnowledgeGraph:
         return cypher
 
     def template_keyword_cypher(self, keywords: List[str]) -> str:
-        """Build a Cypher query that finds plants where uses/medicinal_properties/
-        chemical_components or MedicinalProperty descriptions contain any keyword.
-        Returns only plant_name, uses, family_name, and common_name.
         """
+        Build Cypher query to match keywords in:
+        - p.uses
+        - p.medicinal_properties
+        - p.chemical_components
+        - mp.description (MedicinalProperty)
+        
+        Returns:
+            plant_name, common_name, family_name, uses
+        """
+
         kw_clauses = []
         mp_clauses = []
+
         for k in keywords:
-            k_clean = str(k).replace("'", "''").replace('"', '\\"').strip()
+            k_clean = str(k).replace("'", "''").strip()
             if not k_clean:
                 continue
 
@@ -768,45 +776,48 @@ class EnhancedPlantKnowledgeGraph:
                 f"toLower(coalesce(p.medicinal_properties, '')) CONTAINS toLower('{k_clean}') OR "
                 f"toLower(coalesce(p.chemical_components, '')) CONTAINS toLower('{k_clean}')"
             )
-            mp_clause = f"(mp.description IS NOT NULL AND toLower(coalesce(mp.description, '')) CONTAINS toLower('{k_clean}'))"
+
+            mp_clause = (
+                f"(mp.description IS NOT NULL AND "
+                f"toLower(mp.description) CONTAINS toLower('{k_clean}'))"
+            )
 
             kw_clauses.append(f"({plant_clause})")
             mp_clauses.append(mp_clause)
 
         where_main = " OR ".join(kw_clauses) if kw_clauses else "false"
         where_mp = " OR ".join(mp_clauses) if mp_clauses else "false"
+
         where_clause = f"({where_main}) OR ({where_mp})"
 
-        cypher = f"""
-        MATCH (p:Plant)
-        OPTIONAL MATCH (p)-[:HAS_MEDICINAL_PROPERTY]->(mp:MedicinalProperty)
-        WHERE {where_clause}
-        OPTIONAL MATCH (p)-[:BELONGS_TO_FAMILY]->(f:Family)
-        RETURN 
-            p.plant_name AS plant_name,
-            p.uses AS uses,
-            f.name AS family_name,
-            p.common_name AS common_name
-        LIMIT 500
-        """
-        return cypher
+        return f"""
+            MATCH (p:Plant)
+            OPTIONAL MATCH (p)-[:HAS_MEDICINAL_PROPERTY]->(mp:MedicinalProperty)
+            WHERE {where_clause}
+            OPTIONAL MATCH (p)-[:BELONGS_TO_FAMILY]->(f:Family)
 
+            RETURN DISTINCT
+                p.plant_name AS plant_name,
+                p.common_name AS common_name,
+                f.name AS family_name,
+                p.uses AS uses
+            LIMIT 500
+        """
 
 
 
 
     def search_by_keywords(self, keywords_input: str, fuzzy_threshold: float = 0.65) -> Tuple[bool, List[Dict], str]:
-        """Search KG for plants matching any of the comma/space-separated keywords.
-        Returns only plant_name, uses, family_name, and common_name.
+        """
+        Search KG for plants matching any of the comma/space-separated keywords.
+        Returns plant_name, scientific_name, common_name, alternative_names, uses, family_name.
         """
         try:
             import difflib
+            import re
 
             raw = str(keywords_input).strip()
-            if ',' in raw:
-                orig_keywords = [k.strip() for k in raw.split(',') if k.strip()]
-            else:
-                orig_keywords = [k.strip() for k in raw.split() if k.strip()]
+            orig_keywords = [k.strip() for k in re.split(',| ', raw) if k.strip()]
 
             if not orig_keywords:
                 return False, [], "No keywords provided"
@@ -820,57 +831,57 @@ class EnhancedPlantKnowledgeGraph:
                 'diarrhoea': ['diarrhea', 'loose stool', 'dysentery']
             }
 
-            cypher = self.template_keyword_cypher(orig_keywords)
-            success, records = self.query_plant_data(cypher)
-            if not success:
-                return False, [], f"Query failed: {records}"
-
             expanded = set(orig_keywords)
             for k in orig_keywords:
                 for syn in synonym_map.get(k.lower(), []):
                     expanded.add(syn)
 
+            # Cypher: get plant and all alternative names
+            cypher_query = f"""
+            MATCH (p:Plant)
+            OPTIONAL MATCH (p)-[:HAS_MEDICINAL_PROPERTY]->(mp:MedicinalProperty)
+            OPTIONAL MATCH (p)-[:ALSO_KNOWN_AS]->(cn:CommonName)
+            WHERE {" OR ".join([f"toLower(p.uses) CONTAINS toLower('{k}')" for k in expanded])}
+            OPTIONAL MATCH (p)-[:BELONGS_TO_FAMILY]->(f:Family)
+            RETURN 
+                p.name AS plant_name,
+                p.scientificName AS scientific_name,
+                p.commonName AS common_name,
+                collect(DISTINCT cn.name) AS alternative_names,
+                f.name AS family_name,
+                p.uses AS uses
+            LIMIT 500
+            """
+            success, records = self.query_plant_data(cypher_query)
+            if not success:
+                return False, [], f"Query failed: {records}"
+
             processed = []
             for r in records:
                 plant = dict(r)
-                combined_text = str(plant.get('uses', '') or '').lower()
-                tokens = re.findall(r"\w+", combined_text)
+                # Fallbacks
+                display_name = (
+                    plant.get("common_name")
+                    or (plant.get("alternative_names")[0] if plant.get("alternative_names") else None)
+                    or plant.get("plant_name")
+                    or plant.get("scientific_name")
+                    or "Unknown Plant"
+                )
+                plant['display_name'] = display_name
+                plant['matched_terms'] = []  # Add matched_terms logic if desired
 
-                matched = []
-                for k in sorted(list(expanded)):
-                    k_low = k.lower()
-                    reason = None
-                    if k_low in combined_text:
-                        reason = 'substring'
-                    elif tokens:
-                        close = difflib.get_close_matches(k_low, tokens, n=1, cutoff=fuzzy_threshold)
-                        if close:
-                            reason = f"fuzzy_token_match:{close[0]}"
-                    if reason:
-                        matched.append({"term": k, "reason": reason})
+                processed.append(plant)
 
-                if matched:
-                    plant['matched_terms'] = matched
-                    processed.append(plant)
+            formatted_response = "\n".join(
+                [f"{i+1}. {p['display_name']} (Alternative names: {', '.join(p.get('alternative_names', []))})"
+                for i, p in enumerate(processed)]
+            ) if processed else "No plants found for your keywords"
 
-            # formatted response
-            resp_lines = [f"Plants matching keywords: {', '.join(orig_keywords)}", f"Found {len(processed)} plants\n"]
-            for i, p in enumerate(processed, 1):
-                matched_str = ", ".join([f"{m['term']}({m['reason']})" for m in p.get('matched_terms', [])])
-                resp_lines.append(f"{i}. {p.get('plant_name','Unknown')} (matched: {matched_str})")
-                if p.get('common_name'):
-                    resp_lines.append(f"   Common Name: {p.get('common_name')}")
-                if p.get('family_name'):
-                    resp_lines.append(f"   Family: {p.get('family_name')}")
-                if p.get('uses'):
-                    resp_lines.append(f"   Uses: {p.get('uses')[:200]}{'...' if len(str(p.get('uses',''))) > 200 else ''}")
-                resp_lines.append("")
-
-            formatted_response = "\n".join(resp_lines)
             return True, processed, formatted_response
 
         except Exception as e:
             return False, [], f"Keyword search failed: {str(e)}"
+
 
 
 
@@ -1267,8 +1278,9 @@ def search_plants(plant_name):
 
 @app.route('/search_by_keywords/<keywords>')
 def search_by_keywords_route(keywords):
-    """Search plants by keyword(s). Example: /search_by_keywords/cold,fever or /search_by_keywords/astringent"""
+    """Search plants by keyword(s), including alternative names."""
     try:
+        import time
         start_time = time.time()
         success, results, response = kg.search_by_keywords(keywords)
         search_time = time.time() - start_time
@@ -1284,6 +1296,7 @@ def search_by_keywords_route(keywords):
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         })
     except Exception as e:
+        import time
         return jsonify({
             "success": False,
             "query": keywords,
@@ -1293,7 +1306,7 @@ def search_by_keywords_route(keywords):
             "error_type": type(e).__name__,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         }), 500
-
+    
 @app.route('/smart_search/<query_text>')
 def smart_search_plants(query_text):
     """Smart search entrypoint for new KG (plant / condition / symptom)."""
