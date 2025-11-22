@@ -901,7 +901,32 @@ class EnhancedPlantKnowledgeGraph:
             error_msg = results if not success else "No matches found"
             return False, [], f"Search failed: {error_msg}"
 
+    def smart_search_with_new_kg(self, query_text: str):
+        """
+        Smart search: decides if query_text is a plant name/scientific name or a condition/symptom,
+        and runs the appropriate KG Cypher.
+        Returns (success: bool, results: list[dict], formatted_response: str)
+        """
+        # Basic heuristic: treat as symptom/condition if common medical terms
+        MEDICAL_KEYWORDS = [
+            "fever", "cold", "asthma", "diabetes", "cough", "bronchitis", "pain",
+            "digestive", "respiratory", "inflammation", "diarrhoea", "dysentery"
+        ]
+        
+        # You may want to pre-load all plant names/scientific_names once in __init__ for improved detection.
+        # Here, we just treat queries with known medical words as condition/symptom search.
+        query_lower = query_text.lower()
+        is_condition_query = any(k in query_lower for k in MEDICAL_KEYWORDS)
 
+        if is_condition_query:
+            # Uses your keyword-based Cypher for condition/problem
+            # Leverage/search_by_keywords which uses template_keyword_cypher
+            success, results, response = self.search_by_keywords(query_text)
+        else:
+            # Uses enhanced plant profile Cypher
+            success, results, response = self.search_plants(query_text)
+
+        return success, results, response
     
     def format_search_results(self, plant_data_list: List[Dict], original_query: str) -> str:
         """Format search results for display"""
@@ -935,6 +960,7 @@ class EnhancedPlantKnowledgeGraph:
             response += "\n"
         
         return response
+    
 
 # Initialize Enhanced Knowledge Graph
 kg = EnhancedPlantKnowledgeGraph(NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD)
@@ -1268,89 +1294,85 @@ def search_by_keywords_route(keywords):
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         }), 500
 
-@app.route('/smart_search/<plant_name>')
-def smart_search_plants(plant_name):
-    """Smart search with API-based auto-generation capability"""
+@app.route('/smart_search/<query_text>')
+def smart_search_plants(query_text):
+    """Smart search entrypoint for new KG (plant / condition / symptom)."""
     try:
+        import time
         start_time = time.time()
-        success, results, response = kg.search_or_generate_plant_data(plant_name)
+
+        # 1. Query the KG for plant name or condition/symptom
+        success, results, response = kg.smart_search_with_new_kg(query_text)
+
         search_time = time.time() - start_time
-        
-        # Remove duplicates and ensure single result
+
+        # 2. De-duplicate results by plant identity and keep only the best one
         if results:
-            # Remove duplicates based on plant name (case-insensitive)
             seen_names = set()
             unique_results = []
-            
+
             for result in results:
-                # Try different possible keys for plant name
                 plant_key = ''
                 for key in ['name', 'scientific_name', 'plant_name', 'common_name']:
                     if result.get(key):
                         plant_key = str(result.get(key)).lower().strip()
                         break
-                
-                # If no name found, use a combination of available fields as identifier
+
                 if not plant_key:
                     identifier_parts = []
                     for key in result.keys():
                         if result.get(key) and isinstance(result[key], str):
                             identifier_parts.append(str(result[key]).lower().strip())
-                    plant_key = '|'.join(identifier_parts[:3])  # Use first 3 fields as identifier
-                
+                    plant_key = '|'.join(identifier_parts[:3])
+
                 if plant_key and plant_key not in seen_names:
                     seen_names.add(plant_key)
                     unique_results.append(result)
-            
-            # Filter results: if more than 1 unique result, prioritize KG results (auto_generated is null/False)
+
+            # Prefer KG-native results over API-generated if available
             if len(unique_results) > 1:
-                kg_results = [result for result in unique_results if not result.get('auto_generated', False)]
+                kg_results = [r for r in unique_results if not r.get('auto_generated', False)]
                 if kg_results:
                     unique_results = kg_results
-            
-            # Always return only the first/best result to ensure count = 1
-            results = unique_results[:1] if unique_results else results[:1]  # Fallback to original first result
-            
-            # Re-format response with the single result
+
+            # Always return only the first/best result if more than one
+            results = unique_results[:1] if unique_results else results[:1]
+
+            # Final formatting for single result
             if results:
-                response = kg.format_search_results(results, plant_name)
+                response = kg.format_search_results(results, query_text)
         else:
-            # If no results, ensure results is empty list
             results = []
-        
-        # Determine if data was generated
-        was_generated = any(result.get('auto_generated', False) for result in results) if results else False
-        data_sources_used = []
-        
+
+        was_generated = any(r.get('auto_generated', False) for r in results) if results else False
+
+        data_sources_used = ['Knowledge Graph']
         if was_generated:
-            data_sources_used = ['Wikipedia', 'GBIF', 'Tropicos']
-        else:
-            data_sources_used = ['Knowledge Graph']
-        
+            data_sources_used = ['Knowledge Graph', 'Wikipedia', 'GBIF', 'Tropicos']
+
         return jsonify({
             "success": success,
-            "query": plant_name,
-            "results_count": len(results),  # This will always be 1 or 0
+            "query": query_text,
+            "results_count": len(results),   # 0 or 1
             "results": results,
-            "formatted_response": response,
-            "search_type": "smart_search_with_api_generation",
+            "formatted_response": response,  # natural language answer
+            "search_type": "smart_search_new_kg",
             "was_generated": was_generated,
             "data_sources_used": data_sources_used,
             "search_time": f"{search_time:.3f}s",
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         })
     except Exception as e:
+        import time
         return jsonify({
             "success": False,
-            "query": plant_name,
+            "query": query_text,
             "message": f"Smart search failed: {str(e)}",
             "results_count": 0,
             "results": [],
             "error_type": type(e).__name__,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         }), 500
-
-
 def search_or_generate_plant_data(self, plant_name: str) -> Tuple[bool, List[Dict], str]:
     """Search for plant data, generate if not found using legitimate APIs"""
     try:
