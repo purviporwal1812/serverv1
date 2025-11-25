@@ -650,54 +650,43 @@ class EnhancedPlantKnowledgeGraph:
         text = re.sub(r'\[[^\]]*\]', '', text)
         return text[:1000]
     
-    def template_enhanced_cypher_insert(self, plant_data: Dict) -> str:
-        """Template-based enhanced Cypher with relationships"""
-        plant_name = self.clean_text(plant_data.get('plant_name', '')) or 'Unknown Plant'
-        scientific_name = self.clean_text(plant_data.get('scientific_name', '')) or 'Unknown'
-        family = self.clean_text(plant_data.get('family', '')) or 'Unknown Family'
-        kingdom = self.clean_text(plant_data.get('kingdom', '')) or 'Plantae'
-        order = self.clean_text(plant_data.get('order', '')) or 'Unknown Order'
-        genus = self.clean_text(plant_data.get('genus', '')) or 'Unknown Genus'
-        species = self.clean_text(plant_data.get('species', '')) or 'Unknown Species'
-        medicinal_properties = self.clean_text(plant_data.get('medicinal_properties', ''))
-        habitat = self.clean_text(plant_data.get('habitat', ''))
-        uses = self.clean_text(plant_data.get('uses', ''))
-        chemical_components = self.clean_text(plant_data.get('chemical_components', ''))
-        
-        cypher = f'''
-        MERGE (k:Kingdom {{name: "{kingdom}"}})
-        MERGE (f:Family {{name: "{family}"}})
-        MERGE (g:Genus {{name: "{genus}"}})
-        
-        MERGE (p:Plant {{plant_name: "{plant_name}"}})
-        SET p.scientific_name = "{scientific_name}",
-            p.family = "{family}",
-            p.kingdom = "{kingdom}",
-            p.order = "{order}",
-            p.genus = "{genus}",
-            p.species = "{species}",
-            p.medicinal_properties = "{medicinal_properties}",
-            p.habitat = "{habitat}",
-            p.uses = "{uses}",
-            p.chemical_components = "{chemical_components}",
-            p.created_at = datetime(),
-            p.auto_generated = true,
-            p.data_source = "APIs"
-        
-        MERGE (p)-[:BELONGS_TO_FAMILY]->(f)
-        MERGE (p)-[:BELONGS_TO_GENUS]->(g)
-        MERGE (f)-[:IN_KINGDOM]->(k)
-        MERGE (g)-[:IN_FAMILY]->(f)
-        '''
-        
-        if medicinal_properties and medicinal_properties.strip():
-            cypher += f'''
-            WITH p
-            MERGE (mp:MedicinalProperty {{description: "{medicinal_properties[:500]}"}})
-            MERGE (p)-[:HAS_MEDICINAL_PROPERTY]->(mp)
-            '''
-        
-        return cypher
+    def template_enhanced_cypher_query(self, plant_name: str) -> str:
+    """Enhanced template query with relationships for the new KG schema"""
+    plant_name_clean = plant_name.replace('"', '\\"').strip()
+    
+    cypher = f'''
+    MATCH (p:Plant)
+    WHERE toLower(p.name) CONTAINS toLower("{plant_name_clean}")
+       OR toLower(p.scientificName) CONTAINS toLower("{plant_name_clean}")
+       OR toLower(p.commonName) CONTAINS toLower("{plant_name_clean}")
+    
+    OPTIONAL MATCH (p)-[:BELONGS_TO_FAMILY]->(f:Family)
+    OPTIONAL MATCH (p)-[:HAS_PROPERTY]->(prop:Property)
+    OPTIONAL MATCH (p)-[:TREATS]->(c:Condition)
+    OPTIONAL MATCH (p)-[:USES_PART]->(pp:PlantPart)
+    OPTIONAL MATCH (p)-[:ALSO_KNOWN_AS]->(cn:CommonName)
+    OPTIONAL MATCH (p)-[:AFFECTS]->(bp:BodyPart)
+    OPTIONAL MATCH (p)-[:SIMILAR_USE]-(similar:Plant)
+    WHERE similar <> p
+    
+    RETURN p.name as plant_name,
+           p.scientificName as scientific_name,
+           p.commonName as common_name,
+           p.family as family,
+           p.uses as uses,
+           p.data as data,
+           p.source as data_source,
+           f.name as family_name,
+           collect(DISTINCT prop.name)[0..5] as properties,
+           collect(DISTINCT c.name)[0..5] as treats_conditions,
+           collect(DISTINCT pp.name)[0..3] as plant_parts_used,
+           collect(DISTINCT cn.name)[0..3] as alternate_names,
+           collect(DISTINCT bp.name)[0..3] as affects_body_parts,
+           collect(DISTINCT similar.name)[0..3] as similar_plants
+    LIMIT 5
+    '''
+    
+    return cypher
     
     def insert_plant_data(self, cypher_query: str) -> Tuple[bool, str]:
         """Execute enhanced Cypher CREATE query"""
