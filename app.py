@@ -650,7 +650,7 @@ class EnhancedPlantKnowledgeGraph:
         text = re.sub(r'\[[^\]]*\]', '', text)
         return text[:1000]
     
-   def template_enhanced_cypher_query(self, plant_name: str) -> str:
+    def template_enhanced_cypher_query(self, plant_name: str) -> str:
         """Enhanced template query with relationships for the new KG schema"""
         plant_name_clean = plant_name.replace('"', '\\"').strip()
         
